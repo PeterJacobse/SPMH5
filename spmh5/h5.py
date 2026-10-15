@@ -57,7 +57,7 @@ def append_file(file_path: str = ""):
 
 
 
-# Extract/filter specific h5py types
+# Extract/filter/find specific h5py types
 def get_attributes(h5object: h5py.File | h5py.Group | h5py.Dataset) -> dict:
     return {key: value for key, value in h5object.attrs.items()}
 
@@ -69,6 +69,20 @@ def get_datasets(root_or_group: h5py.File | h5py.Group) -> dict:
 
 def get_items(root_or_group: h5py.File | h5py.Group) -> dict:
     return {key: value for key, value in root_or_group.items()}
+
+def get_root(h5object: h5py.Group | h5py.Dataset | h5py.File) -> h5py.Group:
+    try:
+        if isinstance(h5object, h5py.File): return h5object
+        possible_root = h5object
+        
+        for _ in range(6):
+            if possible_root.name == '/':
+                assert isinstance(possible_root, h5py.Group)
+                return possible_root
+            possible_root = possible_root.parent
+        raise Exception(f"Could not locate the HDF5 file root from object {h5object}")
+    except Exception as e:
+        raise Exception(f"Problem finding the HDF5 file root: {e}")
 
 
 
@@ -166,7 +180,7 @@ def create_instrument(root: h5py.File, name: str = "", *, long_name: str = "", v
 
 
 
-# Datasets
+# General and Main datasets
 def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units: str = "", attributes: dict = {}, data: np.ndarray | None = None,
                     dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, maxshape: tuple | int | None = None, **kwargs) -> h5py.Dataset:
     try:
@@ -185,11 +199,14 @@ def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units:
                 raise TypeError(f"Unsupported data type family for h5py: {parsed_dtype}")
         
         if isinstance(data, np.ndarray):
+            shape = data.shape
             if parsed_dtype.kind == "U":
-                dataset = root_or_group.create_dataset(name, shape = data.shape, dtype = target_dtype, **kwargs)
+                if isinstance(maxshape, tuple): dataset = root_or_group.create_dataset(name, shape = shape, dtype = target_dtype, chunks = True, maxshape = maxshape, **kwargs)
+                else: dataset = root_or_group.create_dataset(name, shape = shape, dtype = target_dtype, **kwargs)
                 dataset[...] = data.astype("O")
             else:
-                dataset = root_or_group.create_dataset(name, data = data, dtype = target_dtype, **kwargs)
+                if isinstance(maxshape, tuple): dataset = root_or_group.create_dataset(name, data = data, dtype = target_dtype, chunks = True, maxshape = maxshape, **kwargs)
+                else: dataset = root_or_group.create_dataset(name, data = data, dtype = target_dtype, **kwargs)
         else:
             dataset = root_or_group.create_dataset(name, dtype = target_dtype, shape = shape, chunks = True, maxshape = maxshape, *kwargs)
         
@@ -199,6 +216,33 @@ def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units:
         return dataset
     except Exception as e:
         raise Exception(f"Error encountered while attempting to create a new h5py dataset called {name} under {root_or_group}: {e}")
+
+def add_values(dataset: h5py.Dataset, values: np.ndarray, axis: int = -1) -> None:
+    try:
+        dset_shape = dataset.shape
+        if not axis in range(dataset.ndim):
+            resizable_axes = np.where(np.array(dataset.maxshape) == None)[0]
+            axis = resizable_axes[0]
+        
+        values_shape = values.shape
+        
+        axis_length = dset_shape[axis]
+        values_length = values_shape[axis]
+        new_axis_length = axis_length + values_length
+        
+        dataset.resize(new_axis_length, axis = axis)
+        match axis:
+            case 0: dataset[axis_length:] = values
+            case 1: dataset[:, axis_length:] = values
+            case 2: dataset[:, :, axis_length:] = values
+            case _: raise Exception(f"Unsupported axis {axis}")
+        
+    except Exception as e:
+        try:
+            raise Exception(f"Failed to add a data chunk of shape {values_shape} to a dataset of shape {dset_shape} along axis {axis}: {e}") # type: ignore
+        except:
+            raise Exception(f"Failed to add a data chunk {values} to dataset {dataset} along axis {axis}: {e}")
+    return
 
 def create_main_dataset(root: h5py.File, name: str = "", units: str = "", existsok: bool = True, modality: str = "SPM", make_default: bool = True, attributes: dict = {},
                         data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, maxshape: tuple | int | None = None, verbose: bool = False) -> h5py.Dataset:
@@ -215,7 +259,7 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
             else:
                 raise Exception(f"Error: A dataset with the same name ({name}) was already found in this HDF5 file. Aborting.")
         else: data_group = create_group(entry_group, name, attributes = {"signal": name, "NX_class": "NXdata", "units": units})
-        
+                
         data_type = "2D_image"
         if isinstance(data, np.ndarray):
             if data.ndim > 2: data_type = "image_stack"
@@ -228,7 +272,7 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
         root_attrs = get_attributes(root)
         nsid_version = root_attrs.get("nsid_version", "0.0.4")
         dset_attributes = {"units": units, "data_type": data_type, "modality": modality, "nsid_version": nsid_version} | attributes
-        if isinstance(data, np.ndarray): dataset = create_dataset(data_group, name, data = data, dtype = dtype, units = units, attributes = dset_attributes)
+        if isinstance(data, np.ndarray): dataset = create_dataset(data_group, name, data = data, maxshape = maxshape, dtype = dtype, units = units, attributes = dset_attributes)
         elif isinstance(shape, tuple): dataset = create_dataset(data_group, name, shape = shape, maxshape = maxshape, dtype = dtype, units = units, attributes = dset_attributes)
         else:
             raise Exception("Neither data nor shape were provided when attempting to create a dataset")
@@ -239,8 +283,11 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
     except Exception as e:
         raise Exception(f"Error encountered while attempting to create a new h5py dataset called {name}: {e}")
 
+
+
+# Ancillary / Axis datasets
 def create_ancillary_dataset(root: h5py.File, name: str = "", units: str = "", existsok: bool = True, attributes: dict = {},
-                             data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, maxshape: tuple | int | None = None, verbose: bool = False) -> h5py.Dataset:
+                             data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, verbose: bool = False) -> h5py.Dataset:
     """Create a dataset that will become an axis to a main dataset. It is stored by default in the Ancillary Group, and Softlinked to the main dataset group upon calling attach_axis
 
     Args:
@@ -277,8 +324,8 @@ def create_ancillary_dataset(root: h5py.File, name: str = "", units: str = "", e
                 raise Exception(f"Error: A dataset with the same name ({name}) was already found in this HDF5 file. Aborting.")
 
         # Create the dataset
-        if isinstance(data, np.ndarray): dataset = create_dataset(ancillary_group, name, data = data, dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
-        elif isinstance(shape, tuple): dataset = create_dataset(ancillary_group, name, shape = shape, maxshape = maxshape, dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
+        if isinstance(data, np.ndarray): dataset = create_dataset(ancillary_group, name, data = data, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
+        elif isinstance(shape, tuple): dataset = create_dataset(ancillary_group, name, shape = shape, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
         else: raise Exception("Neither data nor shape were provided when attempting to create a dataset")
         
         return dataset
@@ -325,40 +372,90 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         main_dataset_axes = main_dataset_group_attrs.get("axes", None)
         if not isinstance(main_dataset_axes, list | np.ndarray) or not len(main_dataset_axes) == main_dataset_rank: main_dataset_axes = ["." for _ in range(main_dataset_rank)]
         
-        nexus_attributes = {}
         if axis_is_strings:
             main_dataset_axes[axis] = "." # NeXus/H5Web compliance: Provide "." as the axis placeholder so it renders as numeric indices
-            nexus_attributes.update({f"{axis_name}_indices": [axis]})
+            create_attributes(main_dataset_group, {f"{axis_name}_indices": [axis], "axes": main_dataset_axes}) # Add NeXus attributes
         else:
             main_dataset_axes[axis] = axis_name
-            axis_range = np.array([min(axis_data), max(axis_data)], dtype = axis_dtype)
+            create_attributes(main_dataset_group, {"axes": main_dataset_axes}) # Add NeXus attributes
             
+            if axis_dpoints < 1: axis_range = np.zeros(shape = (2,), dtype = axis_dtype) # Empty axis
+            else: axis_range = np.array([min(axis_data), max(axis_data)], dtype = axis_dtype)
+                        
             # Attributes for Gwyddion compatibility
-            gwyddion_attributes = {}                
             match axis:
-                case 0: [create_attributes(target, {"X Range": axis_range, "X Units": axis_units, "X No": axis_dpoints}) for target in [main_dataset, main_dataset_group]]
-                case 1: [create_attributes(target, {"Y Range": axis_range, "Y Units": axis_units, "Y No": axis_dpoints}) for target in [main_dataset, main_dataset_group]]
-                case 2: [create_attributes(target, {"Z Range": axis_range, "Z Units": axis_units, "Z No": axis_dpoints}) for target in [main_dataset, main_dataset_group]]
-                case _: pass                
-            if gwyddion_attributes: [create_attributes(target, gwyddion_attributes) for target in [main_dataset, main_dataset_group]]
-        
-        nexus_attributes.update({"axes": main_dataset_axes})
-        [create_attributes(target, nexus_attributes) for target in [main_dataset, main_dataset_group]]
+                case 0: range_units_attrs = {"X Range": axis_range, "X Units": axis_units, "X No": axis_dpoints}
+                case 1: range_units_attrs = {"Y Range": axis_range, "Y Units": axis_units, "Y No": axis_dpoints}
+                case 2: range_units_attrs = {"Z Range": axis_range, "Z Units": axis_units, "Z No": axis_dpoints}
+                case _: range_units_attrs = {"A Range": axis_range, "A Units": axis_units, "A No": axis_dpoints}
+                
+            [create_attributes(target, range_units_attrs) for target in [main_dataset, main_dataset_group]]
+            create_attributes(ancillary_dataset, {"axis": axis, "main_dataset_path": main_dataset_path})
     
     except Exception as e:
-        print(f"Failed to attach dataset {axis_name} to axis {axis} of {main_dataset_name}: {e}")
+        try:
+            print(f"Failed to attach dataset {axis_name} to axis {axis} of {main_dataset_name}: {e}")
+        except Exception as e:
+            print(f"Failed to attach dataset {ancillary_dataset} to axis {axis} of {main_dataset}: {e}")
     return
 
-def create_linear_axis(root: h5py.File, main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: tuple | list = [0, 1], units: str = "", existsok: bool = True, attributes: dict = {}, verbose: bool = False) -> h5py.Dataset:
+def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: tuple | list = [0, 1], units: str = "", existsok: bool = True, attributes: dict = {}, verbose: bool = False) -> h5py.Dataset:
     try:
+        root = get_root(main_dataset)
         n_elements = main_dataset.shape[axis]
         values = np.linspace(limits[0], limits[1], n_elements)
         
-        axis_ds = create_ancillary_dataset(root, name = name, units = units, data = values, existsok = existsok, attributes = attributes, verbose = verbose)
+        axis_ds = create_ancillary_dataset(root, name = name, units = units, data = values, existsok = existsok, attributes = attributes, verbose = verbose) # type: ignore
         attach_axis(main_dataset, axis_ds, axis = axis)        
     except Exception as e:
         raise Exception(f"Could not create a linear dataset attached to {main_dataset}: {e}")
     return axis_ds
+
+def update_axis(ancillary_dataset: h5py.Dataset, root: h5py.File | h5py.Group | None = None) -> None:
+    try:
+        if not isinstance(root, h5py.File): root = get_root(ancillary_dataset)
+        
+        axis_attrs = get_attributes(ancillary_dataset)
+        
+        axis_dtype = ancillary_dataset.dtype
+        axis_is_strings = (axis_dtype.kind in ('O', 'S', 'U')) or (h5py.check_string_dtype(axis_dtype) is not None)
+        
+        axis_data = ancillary_dataset[:]
+        axis_dpoints = len(axis_data)
+        
+        if axis_is_strings or axis_dpoints < 1: axis_range = np.empty(shape = (2,), dtype = axis_dtype) # Empty axis
+        else: axis_range = np.array([min(axis_data), max(axis_data)], dtype = axis_dtype)
+        
+        main_dataset_path = axis_attrs.get("main_dataset_path", "")
+        axis_of_main_dataset = int(axis_attrs.get("axis", 0))
+        
+        if main_dataset_path:
+            main_dataset = root[main_dataset_path]
+            main_dataset_group = main_dataset.parent
+            assert isinstance(main_dataset, h5py.Dataset) and isinstance(main_dataset_group, h5py.Group)
+            
+            match axis_of_main_dataset:
+                case 0: range_attrs = {"X Range": axis_range, "X No": axis_dpoints}
+                case 1: range_attrs = {"Y Range": axis_range, "Y No": axis_dpoints}
+                case 2: range_attrs = {"Z Range": axis_range, "Z No": axis_dpoints}
+                case _: range_attrs = {"A Range": axis_range, "A No": axis_dpoints}
+            
+            [create_attributes(target, range_attrs) for target in [main_dataset, main_dataset_group]]
+    
+    except Exception as e:
+        print(f"Failed to update dataset {ancillary_dataset}: {e}")
+    return
+
+def add_values_to_axis(ancillary_dataset: h5py.Dataset, new_values: list | int | float | np.ndarray = [], root: h5py.File | h5py.Group | None = None) -> None:
+    if isinstance(new_values, float | int): new_values = [new_values]
+    n_new_values = len(new_values)    
+    n_elements = ancillary_dataset.shape[0]
+    
+    ancillary_dataset.resize(n_elements + n_new_values, axis = 0)
+    ancillary_dataset[n_elements:] = new_values
+    
+    update_axis(ancillary_dataset, root)
+    return
 
 
 
