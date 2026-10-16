@@ -1,20 +1,19 @@
-import os, h5py
+import os, h5py, json
 from contextlib import contextmanager
 import numpy as np
 from datetime import datetime, timezone
 from .file_picker import get_file_path_from_dialog
+from .data_objects import CoordinateFrame
 from typing import Literal
+from collections.abc import Sequence
+Numeric = float | int | complex | np.integer | np.floating
 
 
 
 @contextmanager
 def read_file(file_path: str = ""):
-    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"])
-    
-    if not os.path.isfile(file_path):
-        print(f"Invalid file path provided to read_file: {file_path}")
-        yield False
-        return
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "load")
+    if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to read_file: {file_path}")
 
     ext = os.path.splitext(file_path)
     if not ext[1].lower() in {".h5", ".hdf5"}:
@@ -29,11 +28,24 @@ def read_file(file_path: str = ""):
         root.close()
     return
 
+# File is set up correctly upon using this function in a context manager, like with write_file(file_path) as root: ...
 @contextmanager
-def write_file(file_path: str = "", label_root: bool = True):
+def write_file(file_path: str = "", creator: str = "spmh5", nsid_version: str = "0.0.4", existsok: bool = False):
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "save")
     try:
+        if os.path.isfile(file_path):
+            if existsok: print(f"Warning: file {file_path} already exists. Overwriting")
+            else: raise IOError(f"Error: file {file_path} already exists. Aborting")
+        
         root = h5py.File(file_path, "w")
-        if label_root: create_attributes(root, {"NX_class": "NXroot"})
+        
+        # Attach the attributes for a compliant file
+        creation_timestamp = os.path.getctime(file_path)
+        creation_datetime = datetime.fromtimestamp(creation_timestamp, tz = timezone.utc)
+        datetime_iso_8601 = creation_datetime.isoformat()
+        root_attrs = {"filename": os.path.basename(file_path), "creator": creator, "data_model": "NSID", "version": nsid_version, "nsid_version": nsid_version, "NX_class": "NXroot", "file_time": datetime_iso_8601} | create_datetime()
+        create_attributes(root, root_attrs)
+        
         yield root
     finally:
         root.close()
@@ -41,12 +53,8 @@ def write_file(file_path: str = "", label_root: bool = True):
 
 @contextmanager
 def append_file(file_path: str = ""):
-    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"])
-
-    if not os.path.isfile(file_path):
-        print(f"Invalid file path provided to append_file: {file_path}")
-        yield False
-        return
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "load")
+    if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to append_file: {file_path}")
     
     try:
         root = h5py.File(file_path, "a")
@@ -54,6 +62,49 @@ def append_file(file_path: str = ""):
     finally:
         root.close()
     return
+
+# Single shot file creation / setup
+def setup_file(file_path: str = "", close: bool = True, existsok: bool = False, nsid_version: str = "0.0.4", creator: str = "spmh5") -> None | h5py.File:
+    """
+    Generate a NSID and NeXus-compatible HDF5 file for n-dimensional parameter space measurements.
+
+    Args:
+        file_path (str): File path as as string
+        close (bool, optional): Whether to close the file after creation or keep it open and return a reference to the root. Defaults to True.
+        existsok (bool, optional): Whether to overwrite if a file with the same path already exists. Defaults to True.
+        channel_names (list | str, optional): Names of the different measurements. Defaults to "Channel_000".
+        nsid_version (str, optional): String reflecting the NSID compatibility version. Defaults to "0.0.4".
+
+    Returns:
+        (None | tuple[h5py.File, h5py.Group, list[h5py.Group]]): None if 'close' is True. Otherwise, a tuple with the file root as first element, the entry group as second argument, and a list of channel groups as the third argument.
+    """
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "save")
+    if os.path.isfile(file_path):
+        if existsok: print(f"Warning: File already exists at path {file_path}. Overwriting")
+        else: raise IOError(f"Error: File already exists at path {file_path}. Aborting")
+
+    try:
+        root = h5py.File(file_path, "w")
+        
+        # Date and time attributes
+        creation_timestamp = os.path.getctime(file_path)
+        creation_datetime = datetime.fromtimestamp(creation_timestamp, tz = timezone.utc)
+        datetime_iso_8601 = creation_datetime.isoformat()        
+        create_attributes(root, {"filename": os.path.basename(file_path), "file_time": datetime_iso_8601, "creator": creator, "data_model": "NSID", "version": nsid_version, "nsid_version": nsid_version, "NX_class": "NXroot"} | create_datetime())
+    
+    except Exception as e:
+        print(f"Error encountered while setting up HDF5 file: {e}")
+
+    if close:
+        root.close()
+        return
+    else:
+        return root
+
+def get_file(file_path: str = "") -> SPMH5File:
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "load")
+    if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to read_file: {file_path}")
+    return SPMH5File.from_file(file_path)
 
 
 
@@ -182,7 +233,7 @@ def create_instrument(root: h5py.File, name: str = "", *, long_name: str = "", v
 
 # General and Main datasets
 def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units: str = "", attributes: dict = {}, data: np.ndarray | None = None,
-                    dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, maxshape: tuple | int | None = None, **kwargs) -> h5py.Dataset:
+                   dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, resizable_axes: Numeric | Sequence | None = None, maxshape: tuple | int | None = None, **kwargs) -> h5py.Dataset:
     try:
         if dtype is None and isinstance(data, np.ndarray): parsed_dtype = data.dtype
         else: parsed_dtype = np.dtype(dtype)
@@ -198,8 +249,17 @@ def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units:
             case _:
                 raise TypeError(f"Unsupported data type family for h5py: {parsed_dtype}")
         
-        if isinstance(data, np.ndarray):
+        if isinstance(data, np.ndarray): # Data is passed explicitly. Resizable axes may be provided instead of maxshape for easier declaration.
             shape = data.shape
+            
+            # Check if resizable axes are provided
+            if isinstance(resizable_axes, Numeric): resizable_axes = (resizable_axes,)
+            if isinstance(resizable_axes, Sequence):
+                new_maxshape = []
+                for dim, axis_length in enumerate(shape):
+                    new_maxshape.append(None) if dim in resizable_axes else new_maxshape.append(axis_length)
+                maxshape = tuple(new_maxshape)            
+            
             if parsed_dtype.kind == "U":
                 if isinstance(maxshape, tuple): dataset = root_or_group.create_dataset(name, shape = shape, dtype = target_dtype, chunks = True, maxshape = maxshape, **kwargs)
                 else: dataset = root_or_group.create_dataset(name, shape = shape, dtype = target_dtype, **kwargs)
@@ -207,7 +267,7 @@ def create_dataset(root_or_group: h5py.File | h5py.Group, name: str = "", units:
             else:
                 if isinstance(maxshape, tuple): dataset = root_or_group.create_dataset(name, data = data, dtype = target_dtype, chunks = True, maxshape = maxshape, **kwargs)
                 else: dataset = root_or_group.create_dataset(name, data = data, dtype = target_dtype, **kwargs)
-        else:
+        else: # No data is passed, but a shape is provided. Since there is no data to infer a shape from, maxshape must be provided
             dataset = root_or_group.create_dataset(name, dtype = target_dtype, shape = shape, chunks = True, maxshape = maxshape, *kwargs)
         
         dimension_type, quantity = infer_quantity_from_units(units)
@@ -245,7 +305,7 @@ def add_values(dataset: h5py.Dataset, values: np.ndarray, axis: int = -1) -> Non
     return
 
 def create_main_dataset(root: h5py.File, name: str = "", units: str = "", existsok: bool = True, modality: str = "SPM", make_default: bool = True, attributes: dict = {},
-                        data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, maxshape: tuple | int | None = None, verbose: bool = False) -> h5py.Dataset:
+                        data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, resizable_axes: Numeric | Sequence | None = None, maxshape: tuple | int | None = None, verbose: bool = False) -> h5py.Dataset:
     try:
         # Find or create the entry group
         entry_group = get_entry_group(root, name = "Measurement_000", verbose = verbose)
@@ -258,8 +318,10 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
                 del(data_group[name])
             else:
                 raise Exception(f"Error: A dataset with the same name ({name}) was already found in this HDF5 file. Aborting.")
-        else: data_group = create_group(entry_group, name, attributes = {"signal": name, "NX_class": "NXdata", "units": units})
-                
+        else:
+            data_group_attrs = {"signal": name, "NX_class": "NXdata", "units": units}
+            data_group = create_group(entry_group, name, attributes = data_group_attrs)
+        
         data_type = "2D_image"
         if isinstance(data, np.ndarray):
             if data.ndim > 2: data_type = "image_stack"
@@ -268,12 +330,16 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
             if len(shape) > 2: data_type = "image_stack"
             elif len(shape) < 2: data_type = "graph"
         
-        # Create the dataset
+        # Create the dataset attributes
         root_attrs = get_attributes(root)
         nsid_version = root_attrs.get("nsid_version", "0.0.4")
         dset_attributes = {"units": units, "data_type": data_type, "modality": modality, "nsid_version": nsid_version} | attributes
-        if isinstance(data, np.ndarray): dataset = create_dataset(data_group, name, data = data, maxshape = maxshape, dtype = dtype, units = units, attributes = dset_attributes)
-        elif isinstance(shape, tuple): dataset = create_dataset(data_group, name, shape = shape, maxshape = maxshape, dtype = dtype, units = units, attributes = dset_attributes)
+        
+        # Create the dataset
+        if isinstance(data, np.ndarray): # Data is passed explicitly
+            dataset = create_dataset(data_group, name, data = data, resizable_axes = resizable_axes, dtype = dtype, units = units, attributes = dset_attributes)
+        elif isinstance(shape, tuple): # The dataset is instantiated with a certain shape            
+            dataset = create_dataset(data_group, name, shape = shape, maxshape = maxshape, dtype = dtype, units = units, attributes = dset_attributes)
         else:
             raise Exception("Neither data nor shape were provided when attempting to create a dataset")
         
@@ -288,7 +354,7 @@ def create_main_dataset(root: h5py.File, name: str = "", units: str = "", exists
 # Ancillary / Axis datasets
 def create_ancillary_dataset(root: h5py.File, name: str = "", units: str = "", existsok: bool = True, attributes: dict = {},
                              data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, verbose: bool = False) -> h5py.Dataset:
-    """Create a dataset that will become an axis to a main dataset. It is stored by default in the Ancillary Group, and Softlinked to the main dataset group upon calling attach_axis
+    """Create a dataset that will become an axis to a main dataset. It is stored by default in the Ancillary Group, and Softlinked to the main dataset group upon calling attach_axis. Ancillary datasets are 1D and resizable by default.
 
     Args:
         root (h5py.File): Root.
@@ -324,8 +390,8 @@ def create_ancillary_dataset(root: h5py.File, name: str = "", units: str = "", e
                 raise Exception(f"Error: A dataset with the same name ({name}) was already found in this HDF5 file. Aborting.")
 
         # Create the dataset
-        if isinstance(data, np.ndarray): dataset = create_dataset(ancillary_group, name, data = data, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
-        elif isinstance(shape, tuple): dataset = create_dataset(ancillary_group, name, shape = shape, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis"})
+        if isinstance(data, np.ndarray): dataset = create_dataset(ancillary_group, name, data = data, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis", "interpretation": "spectrum"})
+        elif isinstance(shape, tuple): dataset = create_dataset(ancillary_group, name, shape = shape, maxshape = (None,), dtype = dtype, units = units, attributes = attributes | {"NX_class": "NXaxis", "interpretation": "spectrum"})
         else: raise Exception("Neither data nor shape were provided when attempting to create a dataset")
         
         return dataset
@@ -379,9 +445,9 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
             main_dataset_axes[axis] = axis_name
             create_attributes(main_dataset_group, {"axes": main_dataset_axes}) # Add NeXus attributes
             
-            if axis_dpoints < 1: axis_range = np.zeros(shape = (2,), dtype = axis_dtype) # Empty axis
-            else: axis_range = np.array([min(axis_data), max(axis_data)], dtype = axis_dtype)
-                        
+            if axis_dpoints < 2: axis_range = np.zeros(shape = (2,), dtype = axis_dtype) # Empty axis
+            else: axis_range = np.array([axis_data[0], axis_data[-1]], dtype = axis_dtype)
+
             # Attributes for Gwyddion compatibility
             match axis:
                 case 0: range_units_attrs = {"X Range": axis_range, "X Units": axis_units, "X No": axis_dpoints}
@@ -391,7 +457,7 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
                 
             [create_attributes(target, range_units_attrs) for target in [main_dataset, main_dataset_group]]
             create_attributes(ancillary_dataset, {"axis": axis, "main_dataset_path": main_dataset_path})
-    
+        
     except Exception as e:
         try:
             print(f"Failed to attach dataset {axis_name} to axis {axis} of {main_dataset_name}: {e}")
@@ -399,17 +465,27 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
             print(f"Failed to attach dataset {ancillary_dataset} to axis {axis} of {main_dataset}: {e}")
     return
 
-def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: tuple | list = [0, 1], units: str = "", existsok: bool = True, attributes: dict = {}, verbose: bool = False) -> h5py.Dataset:
+def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: Sequence = (0, 1), units: str = "", existsok: bool = True, attributes: dict = {}, verbose: bool = False) -> h5py.Dataset:
     try:
         root = get_root(main_dataset)
         n_elements = main_dataset.shape[axis]
-        values = np.linspace(limits[0], limits[1], n_elements)
+        point_size = (limits[1] - limits[0]) / n_elements
+        values = np.linspace(limits[0] + point_size / 2, limits[1] - point_size / 2, n_elements)
         
         axis_ds = create_ancillary_dataset(root, name = name, units = units, data = values, existsok = existsok, attributes = attributes, verbose = verbose) # type: ignore
         attach_axis(main_dataset, axis_ds, axis = axis)        
     except Exception as e:
         raise Exception(f"Could not create a linear dataset attached to {main_dataset}: {e}")
     return axis_ds
+
+def create_axes_from_frame(main_dataset: h5py.Dataset, frame: CoordinateFrame, names: list = ["x", "y", "z", "a"]) -> list[h5py.Dataset]:
+    if not main_dataset.ndim == frame.rank: raise Exception(f"Rank of dataset {main_dataset.ndim} does not match dimensionality of frame {frame.rank}")
+    
+    dataset_list = []
+    for dim, (limits, units, name) in enumerate(zip(frame.ranges, frame.units, names)):
+        ds = create_linear_axis(main_dataset, axis = dim, name = name, limits = limits, units = units) # type: ignore
+        dataset_list.append(ds)
+    return dataset_list
 
 def update_axis(ancillary_dataset: h5py.Dataset, root: h5py.File | h5py.Group | None = None) -> None:
     try:
@@ -423,8 +499,8 @@ def update_axis(ancillary_dataset: h5py.Dataset, root: h5py.File | h5py.Group | 
         axis_data = ancillary_dataset[:]
         axis_dpoints = len(axis_data)
         
-        if axis_is_strings or axis_dpoints < 1: axis_range = np.empty(shape = (2,), dtype = axis_dtype) # Empty axis
-        else: axis_range = np.array([min(axis_data), max(axis_data)], dtype = axis_dtype)
+        if axis_is_strings or axis_dpoints < 2: axis_range = np.empty(shape = (2,), dtype = axis_dtype) # Empty axis
+        else: axis_range = np.array([axis_data[0], axis_data[1]], dtype = axis_dtype)
         
         main_dataset_path = axis_attrs.get("main_dataset_path", "")
         axis_of_main_dataset = int(axis_attrs.get("axis", 0))
@@ -446,9 +522,9 @@ def update_axis(ancillary_dataset: h5py.Dataset, root: h5py.File | h5py.Group | 
         print(f"Failed to update dataset {ancillary_dataset}: {e}")
     return
 
-def add_values_to_axis(ancillary_dataset: h5py.Dataset, new_values: list | int | float | np.ndarray = [], root: h5py.File | h5py.Group | None = None) -> None:
-    if isinstance(new_values, float | int): new_values = [new_values]
-    n_new_values = len(new_values)    
+def add_values_to_axis(ancillary_dataset: h5py.Dataset, new_values: Numeric | list | np.ndarray = [], root: h5py.File | h5py.Group | None = None) -> None:
+    if isinstance(new_values, Numeric): new_values = [new_values]
+    n_new_values = len(new_values)
     n_elements = ancillary_dataset.shape[0]
     
     ancillary_dataset.resize(n_elements + n_new_values, axis = 0)
@@ -467,49 +543,6 @@ def create_thumbnail(root: h5py.File, *, attributes: dict = {}) -> h5py.Group:
         return new_group
     except:
         raise Exception(f"Error encountered while attempting to create a new h5py group called \"thumbnail\" under {root}")
-
-
-
-# File creation
-def create_file(file_path: str, close: bool = True, existsok: bool = False, nsid_version: str = "0.0.4", creator: str = "spmh5") -> None | h5py.File:
-    """
-    Generate a NSID and NeXus-compatible HDF5 file for n-dimensional parameter space measurements.
-
-    Args:
-        file_path (str): File path as as string
-        close (bool, optional): Whether to close the file after creation or keep it open and return a reference to the root. Defaults to True.
-        existsok (bool, optional): Whether to overwrite if a file with the same path already exists. Defaults to True.
-        channel_names (list | str, optional): Names of the different measurements. Defaults to "Channel_000".
-        nsid_version (str, optional): String reflecting the NSID compatibility version. Defaults to "0.0.4".
-
-    Returns:
-        (None | tuple[h5py.File, h5py.Group, list[h5py.Group]]): None if 'close' is True. Otherwise, a tuple with the file root as first element, the entry group as second argument, and a list of channel groups as the third argument.
-    """        
-    if os.path.isfile(file_path):
-        if existsok:
-            print(f"File already exists at path {file_path}. Overwriting")
-        else:
-            print(f"File already exists at path {file_path}. Aborting")
-            return
-
-    try:
-        root = h5py.File(file_path, "w")
-        
-        # Date and time attributes
-        creation_timestamp = os.path.getctime(file_path)
-        creation_datetime = datetime.fromtimestamp(creation_timestamp, tz = timezone.utc)
-        datetime_iso_8601 = creation_datetime.isoformat()
-        
-        create_attributes(root, {"filename": os.path.basename(file_path), "file_time": datetime_iso_8601, "creator": creator, "data_model": "NSID", "version": nsid_version, "nsid_version": nsid_version, "NX_class": "NXroot"} | create_datetime())
-    
-    except Exception as e:
-        print(f"Error encountered while setting up HDF5 file: {e}")
-
-    if close:
-        root.close()
-        return
-    else:
-        return root
 
 
 

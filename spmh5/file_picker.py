@@ -1,7 +1,10 @@
+from typing import Literal
+import tkinter as tk
+from tkinter import filedialog
 
 
 
-def get_file_path_from_dialog(extensions: list[str] | None = None) -> str:
+def get_file_path_from_dialog(extensions: list[str] | None = None, io: Literal["save", "load"] = "load") -> str:
     """
     Opens the safest native dialog depending on the environment (PyQt6, Jupyter Notebook, or Tkinter).
     """
@@ -23,17 +26,14 @@ def get_file_path_from_dialog(extensions: list[str] | None = None) -> str:
 
     # Fallback to Tkinter only if running as a standard desktop script
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        
         root = tk.Tk()
         root.attributes("-topmost", True)
         root.withdraw()
-        file_path = filedialog.askopenfilename(parent = root, title = "Select a File to Open", filetypes = tk_filter)
+        if io == "load": file_path = filedialog.askopenfilename(parent = root, title = "Select a file to open", filetypes = tk_filter)
+        else: file_path = filedialog.asksaveasfilename(parent = root, title = "Save file as", filetypes = tk_filter)
         root.destroy()
     except Exception as e:
         print(f"Could not open a graphical file dialog: {e}")
         # Absolute fallback: console input
         file_path = input("Please type or paste the absolute file path: ").strip('"\'')
-
     return file_path
