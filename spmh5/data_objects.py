@@ -5,6 +5,36 @@ Numeric = float | int | complex | np.integer | np.floating
 
 
 
+class SPMH5Dataset:
+    def __init__(self, data_array: np.ndarray = np.empty((0,), dtype = np.float32), attrs: dict = {}):
+        self.data = data_array
+        self.attrs = attrs
+    
+    def __getitem__(self, key):
+        return self.data[key]
+    
+    def set_data(self, data: np.ndarray) -> None:
+        self.data = data
+        return
+    
+    def del_data(self) -> None:
+        self.data = np.empty((0,), dtype = np.float32)
+        return
+    
+    def set_attrs(self, attrs: dict) -> None:
+        self.attrs = attrs
+        return
+    
+    def del_attrs(self) -> None:
+        self.attrs = {}
+        return
+    
+    def add_attrs(self, attrs) -> None:
+        self.attrs.update(attrs)
+        return
+
+
+
 class CoordinateFrame:
     def __init__(self, x_range: Numeric | Sequence[Numeric] | None = 10, y_range: Numeric | Sequence[Numeric] | None = 10, z_range: Numeric | Sequence[Numeric] | None = None,
                  ranges: Sequence[Numeric] | Sequence[Sequence[Numeric]] | None = None, units: str | Sequence[str] = "nm", offset: Numeric | Sequence[Numeric] = 0, angles: Numeric | Sequence[Numeric] = 0, angle_units: Literal["degree", "rad"] = "degree"):
@@ -71,16 +101,10 @@ class CoordinateFrame:
 
 
 
-class DataGrid(CoordinateFrame):
-    def __init__(self, x_range: float | int | complex | np.integer | np.floating | Sequence[float | int | complex | np.integer | np.floating] | None = 10,
-                 y_range: float | int | complex | np.integer | np.floating | Sequence[float | int | complex | np.integer | np.floating] | None = 10,
-                 z_range: float | int | complex | np.integer | np.floating | Sequence[float | int | complex | np.integer | np.floating] | None = None,
-                 ranges: Sequence[float | int | complex | np.integer | np.floating] | Sequence[Sequence[float | int | complex | np.integer | np.floating]] | None = None,
-                 units: str | Sequence[str] = "nm", offset: float | int | complex | np.integer | np.floating | Sequence[float | int | complex | np.integer | np.floating] = 0,
-                 angles: float | int | complex | np.integer | np.floating | Sequence[float | int | complex | np.integer | np.floating] = 0, angle_units: Literal['degree'] | Literal['rad'] = "degree",
-                 main_data: np.ndarray = np.zeros((2, 2), dtype = np.float32)
-                 ):
-        super().__init__(x_range, y_range, z_range, ranges, units, offset, angles, angle_units)
-        self.data = main_data
-        
+class DataGrid:
+    def __init__(self, frame: CoordinateFrame = CoordinateFrame(), dataset: SPMH5Dataset = SPMH5Dataset(), axes: list[SPMH5Dataset] = []):
+        self.frame = frame
+        self.dataset = dataset
+        self.axes = axes
+
 

@@ -1,9 +1,9 @@
-import os, h5py, json
+import os, h5py, yaml, pprint, textwrap
 from contextlib import contextmanager
 import numpy as np
 from datetime import datetime, timezone
 from .file_picker import get_file_path_from_dialog
-from .data_objects import CoordinateFrame
+from .data_objects import SPMH5Dataset, CoordinateFrame, DataGrid
 from typing import Literal
 from collections.abc import Sequence
 Numeric = float | int | complex | np.integer | np.floating
@@ -101,6 +101,9 @@ def setup_file(file_path: str = "", close: bool = True, existsok: bool = False, 
     else:
         return root
 
+
+
+# File reading
 def get_file(file_path: str = "") -> SPMH5File:
     if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "load")
     if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to read_file: {file_path}")
@@ -134,6 +137,180 @@ def get_root(h5object: h5py.Group | h5py.Dataset | h5py.File) -> h5py.Group:
         raise Exception(f"Could not locate the HDF5 file root from object {h5object}")
     except Exception as e:
         raise Exception(f"Problem finding the HDF5 file root: {e}")
+
+def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
+    """
+    Generates a nested dict describing the file.
+    The top layer describes the object class, with keys \"main_datasets\", \"axis_datasets\", \"groups\" and \"instruments\".
+    The second layer describes the path of the individual objects belonging to that class.
+    The third layer is the data for that individual object
+
+    Args:
+        root (h5py.File): Reference to a HDF5 file
+
+    Returns:
+        dict: Nested dictionary.
+    """
+    output_dict: dict[str, dict[str, dict[str, object]]] = {"groups": {}, "main_datasets": {}, "axis_datasets": {}, "instruments": {}}
+    
+    group_dict: dict[str, dict[str, object]] = {}
+    instruments_dict: dict[str, dict[str, object]] = {}
+    main_datasets_dict: dict[str, dict[str, object]] = {}
+    axis_datasets_dict: dict[str, dict[str, object]] = {}
+    
+    root_data: dict[str, object] = {}
+    entry_group_data: dict[str, object] = {}
+    ancillary_group_data: dict[str, object] = {}
+    
+    axis_dataset_names: dict[str, str] = {} # Convenience dict for finding the path from a name later
+
+    def recurse(h5obj: h5py.File | h5py.Group, current_path: str = "") -> None:
+        """Recursively browse through the file and add
+
+        Args:
+            h5obj (h5py.File | h5py.Group): _description_
+            current_path (str, optional): _description_. Defaults to "".
+        """
+        # Find attributes, groups and datasets
+        attributes = get_attributes(h5obj)
+        datasets = get_datasets(h5obj)
+        groups = get_groups(h5obj)            
+
+        if attributes:
+            attribute_key = "." if current_path == "" else current_path
+            output_dict.update({f"{attribute_key}/attrs": attributes})
+            
+            if attributes.get("NX_class", None) in ("NXdata", b"NXdata"):
+                nx_entries.append(current_path)
+
+        for dataset_name, dataset in datasets.items():
+            prefix = f"{current_path}/" if current_path else ""
+            dataset_path = f"{prefix}{dataset_name}"
+            
+            if lazy: output_dict.update({dataset_path: dataset})
+            else: output_dict.update({dataset_name: dataset[()]})
+
+        for group_name, group in groups.items():
+            # Build the cumulative internal path string
+            prefix = f"{current_path}/" if current_path else ""
+            
+            recurse(group, f"{prefix}{group_name}")
+        return
+
+
+
+    # Parse the root
+    root_attrs = get_attributes(root)
+    root_groups = get_groups(root)
+    root_data.update({"path": "./", "name": "root", "attrs": root_attrs, "child_groups": [group_name for group_name in root_groups.keys()], "object_type": "root"})
+    group_dict.update({"./": root_data})
+    output_dict["groups"].update(group_dict)
+
+
+
+    # Parse the entry group
+    entry_path = root_attrs.get("default", "")
+    if not entry_path: # No default found
+        if len(root_groups) < 1: # No groups at all
+            print("No groups found in this file!")
+            return output_dict
+        else: # There are groups
+            for group_name, group in root_groups.items(): # Parse the individual groups for NX_class keys
+                group_attrs = get_attributes(group)
+                str_values = [value for value in group_attrs.values() if isinstance(value, str)]
+                
+                if "NXentry" in str_values:
+                    entry_path = group_name # NXentry key found
+                    break
+            if not entry_path: # NXentry not found
+                if len(root_groups) == 1: # Only a single group present
+                    print("Warning! No entry group was found in this HDF5 file.\nPlease tag the entry group by adding the attribute \"default\": [group_name] to the root attributes.\nI did however, find a single group under the root and I will assume that it is the entry group.")
+                    entry_path = list(root_groups.keys())[0]
+                else: # Multiple groups but no tagged NXentry. Ambiguous
+                    print("This file contains multiple groups, but no group is tagged as the entry group. Aborting file read")
+                    return output_dict
+    
+    entry_group = root[entry_path]
+    assert isinstance(entry_group, h5py.Group)
+    entry_group_attrs = get_attributes(entry_group)
+    entry_subgroups = get_groups(entry_group)
+    entry_datasets = get_datasets(entry_group)
+    
+    entry_group_data.update({"path": entry_path, "attrs": entry_group_attrs, "parent_group": "./", "child_groups": [entry_path + "/" + group_name for group_name in entry_subgroups.keys()], "object_type": "group"})
+    if len(entry_datasets) > 0: entry_group_data.update({"datasets": [dataset_name for dataset_name in entry_datasets.keys()]})
+    group_dict.update({entry_path: entry_group_data})
+    output_dict["groups"].update(group_dict)
+
+
+
+    # Parse the ancillary group
+    if "Ancillary" in entry_subgroups.keys():
+        ancillary_group = entry_group["Ancillary"]
+        ancillary_path = entry_path + "/Ancillary"
+        assert isinstance(ancillary_group, h5py.Group)
+        ancillary_group_attrs = get_attributes(ancillary_group)
+        axis_datasets = get_datasets(ancillary_group)
+        
+        ancillary_group_data.update({"path": ancillary_path, "attrs": ancillary_group_attrs, "parent_group": entry_path, "object_type": "group", "datasets": [ancillary_path + "/" + dataset_name for dataset_name in axis_datasets.keys()]})
+        group_dict.update({ancillary_path: ancillary_group_data})
+        
+        for dataset_name, dataset in axis_datasets.items():
+            dset_attrs = get_attributes(dataset)
+            shape = list(getattr(dataset, "shape", []))
+            [dset_attrs.pop(key, None) for key in ["REFERENCE_LIST", "CLASS", "NAME", "DIMENSION_LIST"]]
+            units = dset_attrs.get("units", [])
+            dset_path = ancillary_path + "/" + dataset_name
+            axis_datasets_dict.update({dset_path: {"path": dset_path, "name": dataset_name, "parent_group": ancillary_path, "object_type": "axis dataset", "units": units, "attrs": dset_attrs, "shape": shape}})
+            axis_dataset_names.update({dataset_name: dset_path}) # Convenience dict for finding the path from a name later
+        
+        output_dict["groups"].update(group_dict)
+        output_dict["axis_datasets"].update(axis_datasets_dict)
+
+
+
+    # Parse the remaining groups (assumed to hold the main datasets)
+    for group_name, group in entry_subgroups.items():
+        if group_name.lower() == "ancillary": continue
+        
+        group_path = entry_path + "/" + group_name
+        group_attrs = get_attributes(group)
+        group_subgroups = get_groups(group)
+        group_datasets = get_datasets(group)
+        str_values = [value for value in group_attrs.values() if isinstance(value, str)]
+        
+        if "NX_instrument" in str_values: # The group is an instrument
+            instruments_dict.update({group_path: {"path": group_path, "name": group_name, "parent_group": entry_path, "attrs": group_attrs, "object_type": "instrument group"}})
+            if len(group_datasets) > 0: instruments_dict[group_path].update({"datasets": [group_path + "/" + dataset_name for dataset_name in group_datasets.keys()]})
+            if len(group_subgroups) > 0: instruments_dict[group_path].update({"child_groups": [group_path + "/" + group_name for group_name in group_subgroups.keys()]})
+            output_dict["instruments"].update(instruments_dict)
+            continue
+
+        if len(group_datasets) < 1: continue # The group has no dataset
+        
+        for dataset_name, dataset in group_datasets.items():
+            dset_attrs = get_attributes(dataset)
+            shape = list(getattr(dataset, "shape", []))
+            [dset_attrs.pop(key, None) for key in ["REFERENCE_LIST", "CLASS", "NAME", "DIMENSION_LIST"]]
+            if dset_attrs.get("NX_class", "") == "NXaxis": continue # This tag signifies the dataset is an axis dataset
+            
+            cleaned_attrs = {}
+            for key, value in dset_attrs.items():
+                if isinstance(value, Sequence) and not isinstance(value, str): cleaned_attrs.update({key: list(value)})
+                elif isinstance(value, int | np.integer): cleaned_attrs.update({key: int(value)}) # type: ignore
+                elif isinstance(value, Numeric): cleaned_attrs.update({key: float(value)}) # type: ignore
+            
+            axes = list(group_attrs.get("axes", [])) # Substitute paths for names of the axis datasets
+            for axis_index, axis_name in enumerate(axes):
+                axis_path = axis_dataset_names.get(axis_name, axis_name)
+                axes[axis_index] = axis_path
+            
+            units = group_attrs.get("units", "")
+            dset_path = group_path + "/" + dataset_name
+            
+            main_datasets_dict.update({dset_path: {"path": dset_path, "name": dataset_name, "parent_group": group_path, "object_type": "main dataset", "axes": axes, "units": units, "attrs": cleaned_attrs, "shape": shape}})
+            output_dict["main_datasets"].update(main_datasets_dict)
+
+    return output_dict
 
 
 
@@ -465,12 +642,16 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
             print(f"Failed to attach dataset {ancillary_dataset} to axis {axis} of {main_dataset}: {e}")
     return
 
-def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: Sequence = (0, 1), units: str = "", existsok: bool = True, attributes: dict = {}, verbose: bool = False) -> h5py.Dataset:
+def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = "", limits: Sequence = (0, 1), units: str = "", existsok: bool = True, attributes: dict = {}, include_boundary: bool = False, verbose: bool = False) -> h5py.Dataset:
     try:
         root = get_root(main_dataset)
         n_elements = main_dataset.shape[axis]
-        point_size = (limits[1] - limits[0]) / n_elements
-        values = np.linspace(limits[0] + point_size / 2, limits[1] - point_size / 2, n_elements)
+        
+        if include_boundary:
+            values = np.linspace(limits[0], limits[1], n_elements)
+        else:
+            point_size = (limits[1] - limits[0]) / n_elements
+            values = np.linspace(limits[0] + point_size / 2, limits[1] - point_size / 2, n_elements)
         
         axis_ds = create_ancillary_dataset(root, name = name, units = units, data = values, existsok = existsok, attributes = attributes, verbose = verbose) # type: ignore
         attach_axis(main_dataset, axis_ds, axis = axis)        
@@ -478,12 +659,12 @@ def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = ""
         raise Exception(f"Could not create a linear dataset attached to {main_dataset}: {e}")
     return axis_ds
 
-def create_axes_from_frame(main_dataset: h5py.Dataset, frame: CoordinateFrame, names: list = ["x", "y", "z", "a"]) -> list[h5py.Dataset]:
-    if not main_dataset.ndim == frame.rank: raise Exception(f"Rank of dataset {main_dataset.ndim} does not match dimensionality of frame {frame.rank}")
+def create_axes_from_frame(main_dataset: h5py.Dataset, frame: CoordinateFrame, names: list = ["x", "y", "z", "a"], include_boundaries: bool = False) -> list[h5py.Dataset]:
+    if not main_dataset.ndim == frame.rank: raise Exception(f"Rank of dataset ({main_dataset.ndim}) does not match dimensionality of frame ({frame.rank})")
     
     dataset_list = []
     for dim, (limits, units, name) in enumerate(zip(frame.ranges, frame.units, names)):
-        ds = create_linear_axis(main_dataset, axis = dim, name = name, limits = limits, units = units) # type: ignore
+        ds = create_linear_axis(main_dataset, axis = dim, name = name, limits = limits, units = units, include_boundary = include_boundaries) # type: ignore
         dataset_list.append(ds)
     return dataset_list
 
@@ -569,6 +750,49 @@ def infer_quantity_from_units(units: str = "") -> tuple[str, str]:
         quantity = "Capacitance"
 
     return dimension_type, quantity
+
+def print_dict(dictionary: dict = {}, indent: int = 4, global_indent: int = 0):
+    try:
+        indent_string = "".join([" " for _ in range(global_indent)])
+        yaml_string = yaml.dump(dictionary, default_flow_style = False, sort_keys = False, indent = indent, Dumper = IndentDumper)
+        print(textwrap.indent(yaml_string, indent_string))
+    except Exception as e:
+        pprint.pprint(dictionary)
+        print(f"Cannot print this dictionary using pyyaml: {e}")
+    return
+
+def file_summary(root_or_path: h5py.File | str = ""):
+    if isinstance(root_or_path, h5py.File):
+        output = dict_from_file(root_or_path)
+    elif isinstance(root_or_path, str):
+        if not root_or_path: path = get_file_path_from_dialog(extensions = ["h5", "hdf5"])
+        else: path = root_or_path
+        with read_file(path) as root:
+            assert isinstance(root, h5py.File)
+            output = dict_from_file(root)
+    else:
+        raise IOError("Invalid HDF5 file or path provided")
+    
+    group_data = output.get("groups", {})
+    main_datasets = output.get("main_datasets", {})
+    axis_datasets = output.get("axis_datasets", {})
+    
+    root_data = group_data.get("./", {})
+    
+    print(f"Summary of HDF5 file {root_data.get("filename", "unknown")}, containing {len(main_datasets)} main datasets and {len(axis_datasets)} ancillary datasets, created on {root_data.get("creation_date", "unknown")} at {root_data.get("creation_time", "unknown")}.\n")
+    
+    for main_dataset in main_datasets.values():
+        print(f"\n\n    Info for main dataset {main_dataset.get("name", "unknown")}:\n")
+        print_dict(main_dataset, global_indent = 4)
+        
+        main_dataset_axes = main_dataset.get("axes", [])
+        assert isinstance(main_dataset_axes, list)
+        
+        print("        Attached to this dataset are the following axis datasets:\n")
+        for axis_index, axis in enumerate(main_dataset_axes):
+            axis_dataset = axis_datasets.get(axis, {})            
+            print_dict({f"axis {axis_index}: {axis_dataset.get("name", "unknown")}": axis_dataset}, global_indent = 8)
+    return
 
 
 
@@ -729,3 +953,7 @@ class SPMH5File:
         return cls(root_data, entry_group_data, ancillary_group_data, main_datasets_data, axis_datasets_data, file_tree = output_dict) # type: ignore
 
 
+
+class IndentDumper(yaml.Dumper):
+    def increase_indent(self, flow: bool = False, indentless: bool = False):
+        return super(IndentDumper, self).increase_indent(flow, indentless = False)
