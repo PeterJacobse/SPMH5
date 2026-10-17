@@ -16,10 +16,7 @@ def read_file(file_path: str = ""):
     if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to read_file: {file_path}")
 
     ext = os.path.splitext(file_path)
-    if not ext[1].lower() in {".h5", ".hdf5"}:
-        print(f"Provided file path is not an HDF5 file: {file_path}")
-        yield False
-        return
+    if not ext[1].lower() in {".h5", ".hdf5"}: raise Exception(f"Provided file path is not an HDF5 file: {file_path}")
     
     try:
         root = h5py.File(file_path, "r")
@@ -104,46 +101,13 @@ def setup_file(file_path: str = "", close: bool = True, existsok: bool = False, 
 
 
 # File reading
-def get_file(file_path: str = "") -> SPMH5File:
-    if not file_path: file_path = get_file_path_from_dialog(extensions = ["h5", "hdf5"], io = "load")
-    if not os.path.isfile(file_path): raise IOError(f"Invalid file path provided to read_file: {file_path}")
-    return SPMH5File.from_file(file_path)
-
-
-
-# Extract/filter/find specific h5py types
-def get_attributes(h5object: h5py.File | h5py.Group | h5py.Dataset) -> dict:
-    return {key: value for key, value in h5object.attrs.items()}
-
-def get_groups(root_or_group: h5py.File | h5py.Group) -> dict:
-    return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Group)}
-
-def get_datasets(root_or_group: h5py.File | h5py.Group) -> dict:
-    return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Dataset)}
-
-def get_items(root_or_group: h5py.File | h5py.Group) -> dict:
-    return {key: value for key, value in root_or_group.items()}
-
-def get_root(h5object: h5py.Group | h5py.Dataset | h5py.File) -> h5py.Group:
-    try:
-        if isinstance(h5object, h5py.File): return h5object
-        possible_root = h5object
-        
-        for _ in range(6):
-            if possible_root.name == '/':
-                assert isinstance(possible_root, h5py.Group)
-                return possible_root
-            possible_root = possible_root.parent
-        raise Exception(f"Could not locate the HDF5 file root from object {h5object}")
-    except Exception as e:
-        raise Exception(f"Problem finding the HDF5 file root: {e}")
-
-def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
+def dict_from_file(root: h5py.File, extract_datasets: bool = False) -> dict[str, dict[str, dict[str, object]]]:
     """
     Generates a nested dict describing the file.
     The top layer describes the object class, with keys \"main_datasets\", \"axis_datasets\", \"groups\" and \"instruments\".
     The second layer describes the path of the individual objects belonging to that class.
-    The third layer is the data for that individual object
+    The third layer is the data for that individual object.
+    
 
     Args:
         root (h5py.File): Reference to a HDF5 file
@@ -163,39 +127,6 @@ def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
     ancillary_group_data: dict[str, object] = {}
     
     axis_dataset_names: dict[str, str] = {} # Convenience dict for finding the path from a name later
-
-    def recurse(h5obj: h5py.File | h5py.Group, current_path: str = "") -> None:
-        """Recursively browse through the file and add
-
-        Args:
-            h5obj (h5py.File | h5py.Group): _description_
-            current_path (str, optional): _description_. Defaults to "".
-        """
-        # Find attributes, groups and datasets
-        attributes = get_attributes(h5obj)
-        datasets = get_datasets(h5obj)
-        groups = get_groups(h5obj)            
-
-        if attributes:
-            attribute_key = "." if current_path == "" else current_path
-            output_dict.update({f"{attribute_key}/attrs": attributes})
-            
-            if attributes.get("NX_class", None) in ("NXdata", b"NXdata"):
-                nx_entries.append(current_path)
-
-        for dataset_name, dataset in datasets.items():
-            prefix = f"{current_path}/" if current_path else ""
-            dataset_path = f"{prefix}{dataset_name}"
-            
-            if lazy: output_dict.update({dataset_path: dataset})
-            else: output_dict.update({dataset_name: dataset[()]})
-
-        for group_name, group in groups.items():
-            # Build the cumulative internal path string
-            prefix = f"{current_path}/" if current_path else ""
-            
-            recurse(group, f"{prefix}{group_name}")
-        return
 
 
 
@@ -258,7 +189,7 @@ def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
             dset_attrs = get_attributes(dataset)
             shape = list(getattr(dataset, "shape", []))
             [dset_attrs.pop(key, None) for key in ["REFERENCE_LIST", "CLASS", "NAME", "DIMENSION_LIST"]]
-            units = dset_attrs.get("units", [])
+            units = dset_attrs.get("units", "")
             dset_path = ancillary_path + "/" + dataset_name
             axis_datasets_dict.update({dset_path: {"path": dset_path, "name": dataset_name, "parent_group": ancillary_path, "object_type": "axis dataset", "units": units, "attrs": dset_attrs, "shape": shape}})
             axis_dataset_names.update({dataset_name: dset_path}) # Convenience dict for finding the path from a name later
@@ -286,6 +217,8 @@ def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
             continue
 
         if len(group_datasets) < 1: continue # The group has no dataset
+        group_dict.update({group_path: {"path": group_path, "attrs": group_attrs, "parent_group": entry_path, "object_type": "group", "datasets": [group_path + "/" + dataset_name for dataset_name in group_datasets.keys()]}})
+        output_dict["groups"].update(group_dict)
         
         for dataset_name, dataset in group_datasets.items():
             dset_attrs = get_attributes(dataset)
@@ -304,13 +237,102 @@ def dict_from_file(root: h5py.File) -> dict[str, dict[str, dict[str, object]]]:
                 axis_path = axis_dataset_names.get(axis_name, axis_name)
                 axes[axis_index] = axis_path
             
-            units = group_attrs.get("units", "")
+            units = dset_attrs.get("units", "")
             dset_path = group_path + "/" + dataset_name
             
             main_datasets_dict.update({dset_path: {"path": dset_path, "name": dataset_name, "parent_group": group_path, "object_type": "main dataset", "axes": axes, "units": units, "attrs": cleaned_attrs, "shape": shape}})
             output_dict["main_datasets"].update(main_datasets_dict)
 
+    if not extract_datasets: return output_dict
+    
+    
+    
+    # Extract the datasets to SPMH5 dataset object if desired
+    for index, target in enumerate([axis_datasets_dict, main_datasets_dict]):
+        for dataset_path, dataset in target.items():
+            try:
+                dataset_data = root[dataset_path][:] # type: ignore
+                dataset_name = dataset.get("name", "")
+                dataset_units = dataset.get("units", "")
+                dataset_attrs = dataset.get("attrs", {})
+                
+                if isinstance(dataset_data, np.ndarray) and isinstance(dataset_attrs, dict) and isinstance(dataset_units, str) and isinstance(dataset_name, str):
+                    dataset_object = SPMH5Dataset(name = dataset_name, data_array = dataset_data, attrs = dataset_attrs, units = dataset_units)
+                    if index == 0: axis_datasets_dict[dataset_path].update({"dataset_object": dataset_object})
+                    if index == 1: main_datasets_dict[dataset_path].update({"dataset_object": dataset_object})
+                else:
+                    print(f"Warning: Could not convert dataset {dataset_path} to an SPMH5 dataset")
+            except:
+                raise Exception(f"Failed to read data from HDF5 file at path {dataset_path}")
     return output_dict
+
+def get_data_grids(root: h5py.File) -> tuple[dict[str, dict[str, dict[str, object]]], list[DataGrid]]:
+    output = dict_from_file(root, extract_datasets = True)
+    main_datasets = output["main_datasets"]
+    axis_datasets = output["axis_datasets"]
+    groups = output["groups"]
+    
+    datagrids = []
+    for main_dataset_path, main_dataset in main_datasets.items():
+        main_object = main_dataset.get("dataset_object")
+        if not isinstance(main_object, SPMH5Dataset): break
+        
+        parent_group_path = main_dataset.get("parent_group", "")
+        if not isinstance(parent_group_path, str) or not parent_group_path in groups.keys():
+            print(f"Warning: Could not read the parent group of a dataset at {parent_group_path}.")
+            parent_group_attrs = {}
+        else:
+            parent_group = groups[parent_group_path]
+            parent_group_attrs = parent_group.get("attrs", {})
+            assert isinstance(parent_group_attrs, dict)
+        
+        axes = main_dataset.get("axes", [])
+        if not isinstance(axes, list) or len(axes) < 1: continue
+        
+        axis_objects = []
+        for dim, axis in enumerate(axes):
+            if not axis in axis_datasets.keys():
+                print(f"Warning: Failed to find axis dataset {axis}")
+                continue
+            
+            axis_dataset = axis_datasets[axis]
+            axis_object = axis_dataset.get("dataset_object")
+            if isinstance(axis_object, SPMH5Dataset): axis_objects.append(axis_object)
+        
+        datagrids.append(DataGrid(dataset = main_object, axes = axis_objects, attrs = parent_group_attrs))
+    return output, datagrids
+
+def get_file(file_path: str = ""):
+    return SPMH5File.from_file(file_path)
+
+
+
+# Extract/filter/find specific h5py types
+def get_attributes(h5object: h5py.File | h5py.Group | h5py.Dataset) -> dict:
+    return {key: value for key, value in h5object.attrs.items()}
+
+def get_groups(root_or_group: h5py.File | h5py.Group) -> dict:
+    return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Group)}
+
+def get_datasets(root_or_group: h5py.File | h5py.Group) -> dict:
+    return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Dataset)}
+
+def get_items(root_or_group: h5py.File | h5py.Group) -> dict:
+    return {key: value for key, value in root_or_group.items()}
+
+def get_root(h5object: h5py.Group | h5py.Dataset | h5py.File) -> h5py.Group:
+    try:
+        if isinstance(h5object, h5py.File): return h5object
+        possible_root = h5object
+        
+        for _ in range(6):
+            if possible_root.name == '/':
+                assert isinstance(possible_root, h5py.Group)
+                return possible_root
+            possible_root = possible_root.parent
+        raise Exception(f"Could not locate the HDF5 file root from object {h5object}")
+    except Exception as e:
+        raise Exception(f"Problem finding the HDF5 file root: {e}")
 
 
 
@@ -753,6 +775,8 @@ def infer_quantity_from_units(units: str = "") -> tuple[str, str]:
 
 def print_dict(dictionary: dict = {}, indent: int = 4, global_indent: int = 0):
     try:
+        yaml.add_representer(SPMH5Dataset, lambda dumper, data: dumper.represent_scalar("tag:yaml.org,002:str", repr(data)))
+        
         indent_string = "".join([" " for _ in range(global_indent)])
         yaml_string = yaml.dump(dictionary, default_flow_style = False, sort_keys = False, indent = indent, Dumper = IndentDumper)
         print(textwrap.indent(yaml_string, indent_string))
@@ -827,130 +851,40 @@ def get_object(root_or_path: str | h5py.File | h5py.Group, internal_path: str = 
 
 
 class SPMH5File:
-    def __init__(self, root_data: dict = {}, entry_group_data: dict = {}, ancillary_group_data: dict = {}, main_datasets: dict = {}, axis_datasets: dict = {}, file_tree: dict = {}):
-        self.root_data = root_data
-        self.entry_group_data = entry_group_data
-        self.ancillary_group_data = ancillary_group_data
-        self.main_datasets = main_datasets
-        self.axis_datasets = axis_datasets
-        self.file_tree = file_tree
-        
-        self.main_dataset_paths = list(main_datasets.keys())
-        self.axis_dataset_paths = list(axis_datasets.keys())
-        
-        root_attrs = self.root_data.get("attributes", {})
-        self.filename = root_attrs.get("filename", "unknown")
-        self.date = root_attrs.get("creation_date", "unknown")
-        self.time = root_attrs.get("creation_time", "unknown")
-        pass
+    def __init__(self, name: str = "unknown", creator: str = "unknown", date: str = "unknown", time: str = "unknown", file_dict: dict = {}, attrs: dict = {}, data_grids: list[DataGrid] = []):
+        self.name = name
+        self.creator = creator
+        self.date = date
+        self.time = time
+        self.file_dict = file_dict
+        self.attrs = attrs
+        self.data_grids = data_grids
     
     def __repr__(self) -> str:
         return self.info()
 
-    def info(self) -> str:
-        return f"SPMH5File object {self.filename}, created on {self.date} at {self.time}, containing {len(self.main_datasets)} main datasets and {len(self.axis_datasets)} axis datasets."
+    def info(self, elaborate: bool = False) -> str:
+        output_str_0 = f"SPMH5 file \"{self.name}\" created on {self.date} at {self.time}, containing {len(self.data_grids)} data grids.\n"
+        return output_str_0 + f"Use SPMH5File.file_info() for more details"
+
+    def file_info(self) -> None:
+        print(f"SPMH5 file \"{self.name}\" created on {self.date} at {self.time}, containing {len(self.data_grids)} data grids:\n")
+        [print(data_grid) for data_grid in self.data_grids]
+        print_dict(self.file_dict)
 
     @classmethod
-    def from_file(cls, path: str = "", lazy: bool = True):
-        if not path: path = get_file_path_from_dialog(extensions = ["h5", "h5py"])
-        output_dict: dict[str, object] = {}
-        nx_entries: list[str] = []
-        
-        def recurse(h5obj: h5py.File | h5py.Group, current_path: str = "") -> None:
-            # Find attributes, groups and datasets
-            attributes = get_attributes(h5obj)
-            datasets = get_datasets(h5obj)
-            groups = get_groups(h5obj)            
-
-            if attributes:
-                attribute_key = "." if current_path == "" else current_path
-                output_dict.update({f"{attribute_key}/attrs": attributes})
-                
-                if attributes.get("NX_class", None) in ("NXdata", b"NXdata"):
-                    nx_entries.append(current_path)
-
-            for dataset_name, dataset in datasets.items():
-                prefix = f"{current_path}/" if current_path else ""
-                dataset_path = f"{prefix}{dataset_name}"
-                
-                if lazy: output_dict.update({dataset_path: dataset})
-                else: output_dict.update({dataset_name: dataset[()]})
-
-            for group_name, group in groups.items():
-                # Build the cumulative internal path string
-                prefix = f"{current_path}/" if current_path else ""
-                
-                recurse(group, f"{prefix}{group_name}")
-            return
-        
-        try:
-            with read_file(path) as root:
-                assert isinstance(root, h5py.File)
-                
-                # Instantiate dicts
-                root_data = {}
-                entry_group_data = {}
-                ancillary_group_data = {}
-                main_datasets_data = {}
-                axis_datasets_data = {}
-                
-                # Parse the root
-                root_attrs = get_attributes(root)
-                root_groups = get_groups(root)
-                root_data.update({"path": "./", "attributes": root_attrs, "groups": root_groups})
-                
-                # Parse the entry group
-                entry_path = root_attrs.get("default", "")
-                if entry_path:
-                    entry_group = root[entry_path]
-                    assert isinstance(entry_group, h5py.Group)
-                    entry_group_attrs = get_attributes(entry_group)
-                    entry_subgroups = get_groups(entry_group)
-                    entry_group_data.update({"path": entry_path, "attributes": entry_group_attrs, "subgroups": entry_subgroups})
-                
-                    # Parse the ancillary group
-                    if "Ancillary" in entry_subgroups.keys():
-                        ancillary_group = entry_group["Ancillary"]
-                        ancillary_path = entry_path + "/Ancillary"
-                        assert isinstance(ancillary_group, h5py.Group)
-                        ancillary_group_attrs = get_attributes(ancillary_group)
-                        ancillary_group_data.update({"path": ancillary_path, "attributes": ancillary_group_attrs})
-                        
-                        axis_datasets = get_datasets(ancillary_group)
-                        for dataset_name, dataset in axis_datasets.items():
-                            dset_attrs = get_attributes(dataset)
-                            
-                            units = dset_attrs.get("units", [])
-                            dset_path = ancillary_path + "/" + dataset_name
-                            
-                            axis_datasets_data.update({dset_path: {"name": dataset_name, "dataset": dataset, "type": "axis", "attributes": dset_attrs, "group_attributes": ancillary_group_attrs}})
-                    
-                    # Parse the main dataset groups
-                    for group_name, group in entry_subgroups.items():
-                        if group_name.lower() == "ancillary": continue
-                        main_datasets = get_datasets(group)
-                        if len(main_datasets) < 1: continue # The group has no dataset
-                        
-                        group_path = entry_path + "/" + group_name
-                        group_attrs = get_attributes(group)
-                        
-                        for dataset_name, dataset in main_datasets.items():
-                            dset_attrs = get_attributes(dataset)
-                            if dset_attrs.get("NX_class", "") == "NXaxis": continue # This tag signifies the dataset is an axis dataset
-                            
-                            axes = dset_attrs.get("axes", [])
-                            units = dset_attrs.get("units", [])
-                            dset_path = group_path + "/" + dataset_name
-                            
-                            main_datasets_data.update({dset_path: {"name": dataset_name, "dataset": dataset, "type": "main", "axes": axes, "units": units, "attributes": dset_attrs, "group_attributes": group_attrs}})
-
-                file_tree = recurse(root)
-                output_dict.update({"./": file_tree, "NXdata": nx_entries})
-
-        except Exception as e:
-            print(f"Problem encountered while reading HDF5 file: {e}")
-
-        return cls(root_data, entry_group_data, ancillary_group_data, main_datasets_data, axis_datasets_data, file_tree = output_dict) # type: ignore
+    def from_file(cls, file_path: str = ""):
+        with read_file(file_path) as root:
+            output, data_grids = get_data_grids(root)
+            
+            root_group = output["groups"].get("./", {})
+            if not isinstance(root_group, dict): raise Exception(f"Invalid root group type {type(root_group)}. Expected a dict")
+            
+            root_attrs = root_group.get("attrs", {})
+            assert isinstance(root_attrs, dict)
+            
+            [filename, creator, file_time, file_date, default] = [root_attrs.get(key, "unknown") for key in ["filename", "creator", "creation_time", "creation_date", "default"]]
+        return cls(name = filename, creator = creator, date = file_date, time = file_time, attrs = root_attrs, file_dict = output, data_grids = data_grids)
 
 
 
