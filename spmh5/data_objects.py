@@ -41,9 +41,9 @@ def complex_plot(array: np.ndarray, figsize: tuple = (8, 6), phase_shift: float 
 
 
 class SPMH5Dataset:
-    def __init__(self, data_array: np.ndarray = np.empty((0,), dtype = np.float32), attrs: dict = {}, units: str = "", name: str = ""):
+    def __init__(self, data: list | np.ndarray = np.empty((0,), dtype = np.float32), attrs: dict = {}, units: str = "", name: str = ""):
         self.set_name(name)
-        self.set_data(data_array)
+        self.set_data(data)
         self.set_attrs(attrs)
         self.set_units(units)
         
@@ -67,8 +67,9 @@ class SPMH5Dataset:
         self.name = name
         return
     
-    def set_data(self, data: np.ndarray) -> None:
-        self.data = data
+    def set_data(self, data: list | np.ndarray) -> None:
+        if isinstance(data, list): self.data = np.array(data)
+        else: self.data = data
         return
     
     def del_data(self) -> None:
