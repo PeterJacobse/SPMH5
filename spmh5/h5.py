@@ -2,8 +2,8 @@ import os, h5py, yaml, pprint, textwrap
 from contextlib import contextmanager
 import numpy as np
 from datetime import datetime, timezone
-from .file_picker import get_file_path_from_dialog
-from .data_objects import Dataset, CoordinateFrame, Datagrid
+from .file_picker import *
+from .data_objects import *
 from typing import Literal
 from collections.abc import Sequence
 Numeric = float | int | complex | np.integer | np.floating
@@ -827,12 +827,13 @@ def create_linear_axis(main_dataset: h5py.Dataset, axis: int = 0, name: str = ""
         raise Exception(f"Could not create a linear dataset attached to {main_dataset}: {e}")
     return axis_ds
 
-def create_axes_from_frame(main_dataset: h5py.Dataset, frame: CoordinateFrame, names: list = ["x", "y", "z", "a"], include_boundaries: bool = False) -> list[h5py.Dataset]:
+def create_axes_from_frame(main_dataset: h5py.Dataset, frame: CoordinateFrame, names: list = ["x", "y", "z", "a"], include_boundaries: bool | tuple[bool] = False) -> list[h5py.Dataset]:
     if not main_dataset.ndim == frame.rank: raise Exception(f"Rank of dataset ({main_dataset.ndim}) does not match dimensionality of frame ({frame.rank})")
+    if isinstance(include_boundaries, bool): include_boundaries = [include_boundaries for _ in range(main_dataset.ndim)]
     
     dataset_list = []
-    for dim, (limits, units, name) in enumerate(zip(frame.ranges, frame.units, names)):
-        ds = create_linear_axis(main_dataset, axis = dim, name = name, limits = limits, units = units, include_boundary = include_boundaries) # type: ignore
+    for dim, (limits, units, name, include_boundary) in enumerate(zip(frame.ranges, frame.units, names, include_boundaries)):
+        ds = create_linear_axis(main_dataset, axis = dim, name = name, limits = limits, units = units, include_boundary = include_boundary) # type: ignore
         dataset_list.append(ds)
     return dataset_list
 

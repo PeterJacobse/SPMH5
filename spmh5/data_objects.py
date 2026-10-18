@@ -27,7 +27,7 @@ def complex_to_rgba(input_array: np.ndarray = np.zeros((2, 2)), phase_shift: flo
     rgba = np.concatenate((rgb, np.full_like(rgb, alpha)), axis = 2)[:, :, :4]
     return rgba
 
-def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), phase_shift: float = 0.) -> plt_fig.Figure:
+def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), phase_shift: float = 0., extent: tuple | None = None, origin: Literal["lower", "upper"] = "lower") -> plt_fig.Figure:
     """Convenience function for plotting a complex array
 
     Args:
@@ -36,7 +36,7 @@ def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), phase_shift: float 
     """
     rgba_array = complex_to_rgba(array, phase_shift = phase_shift)
     fig, ax = plt.subplots(figsize = figsize)
-    ax.imshow(rgba_array)
+    ax.imshow(rgba_array, extent = extent, origin = origin)
     return fig
 
 def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None = None, axis_names: list[str] = ["x", "y", "z"], axis_units: list[str] = ["", "", ""], anchor: np.ndarray | None = None,
@@ -61,12 +61,12 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
             case "i": face_color = "#a0a0a0"
             case _: face_color = "#f0a0f0"
     else:
-        face_color = "#00000000"
+        face_color = "#000000"
     for face in faces:
         ax.plot_surface(np.array([[face[0][0], face[1][0]], [face[3][0], face[2][0]]]),
                         np.array([[face[0][1], face[1][1]], [face[3][1], face[2][1]]]),
                         np.array([[face[0][2], face[1][2]], [face[3][2], face[2][2]]]),
-                        color = face_color, edgecolor = edge_color, linewidth = 2, alpha = 0.6, rasterized = True)
+                        color = face_color, edgecolor = edge_color, linewidth = 2, alpha = 0.6)
 
     ax.xaxis.pane.fill = False
     ax.yaxis.pane.fill = False
@@ -75,7 +75,7 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
     # Anchor location is understood to be in fractional coordinates
     if isinstance(anchor, np.ndarray):
         anchor_cartesian = [anchor[dim] * ranges[dim, 1] + (1 - anchor[dim]) * ranges[dim, 0] for dim in range(3)]
-        ax.scatter(anchor[0], anchor[1], anchor[2], marker = "+", color = anchor_color, s = 300, linewidths = 3.5, zorder = 10)
+        ax.scatter(anchor_cartesian[0], anchor_cartesian[1], anchor_cartesian[2], marker = "+", color = anchor_color, s = 300, linewidths = 3.5, zorder = 100)
 
     # Color ticks, labels, and axis lines individually
     ax.tick_params(colors = "#ffffff", which = "both", labelsize = 10)
@@ -85,6 +85,7 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
     ax.set_xlabel(axes_labels[0], color = axis_colors[0], labelpad = 10, fontsize = 12)
     ax.set_ylabel(axes_labels[1], color = axis_colors[1], labelpad = 10, fontsize = 12)
     ax.set_zlabel(axes_labels[2], color = axis_colors[2], labelpad = 10, fontsize = 12)
+    ax.invert_xaxis()
     
     #ax.text(0, 1.5, 0, f"dtype: {array.dtype}", color = "#ffffff")
     [axis.line.set_color(color) for axis, color in zip ([ax.xaxis, ax.yaxis, ax.zaxis], axis_colors)]
@@ -96,7 +97,7 @@ class CoordinateFrame:
     """Class describing a rectilinear coordinate frame with ranges in the x (and potentially y, z, a) dimensions expressed in its own coordinate system.
     An anchor with the same dimensionality defines rotations (self.angles) and translations (self.offset) with respect to a global coordinate system this frame may be placed in. 
     """
-    def __init__(self, x_range: Numeric | NPSequence[Numeric] | None = 10, y_range: Numeric | NPSequence[Numeric] | None = None,
+    def __init__(self, x_range: Numeric | NPSequence[Numeric] | None = None, y_range: Numeric | NPSequence[Numeric] | None = None,
                  z_range: Numeric | NPSequence[Numeric] | None = None, a_range: Numeric | NPSequence[Numeric] | None = None,
                  ranges: NPSequence[Numeric] | NPSequence[NPSequence[Numeric]] | None = None,
                  units: str | NPSequence[str] = "nm", offset: Numeric | NPSequence[Numeric] = 0, angles: Numeric | NPSequence[Numeric] = 0, angle_units: Literal["degree", "rad"] = "degree",
@@ -193,15 +194,14 @@ class CoordinateFrame:
             self.anchor[:len(anchor)] = anchor
         return
 
-    def visualize(self) -> None:
+    def visualize(self) -> plt_fig.Figure:
         match self.rank:
             case 3:
                 fig = represent_as_cube(title = repr(self), ranges = np.array(self.ranges), axis_names = [f"axis[{index}]" for index in range(len(self.ranges))],
                                         axis_units = self.units, anchor = np.array(self.anchor), edge_color = "#ff0000")
-                fig.show()
             case _:
-                pass
-        return
+                raise Exception(f"Visualize is not yet implemented for {self.rank}-dimensional CoordinateFrame objects")
+        return fig
 
 
 
@@ -232,11 +232,19 @@ class Dataset:
         self.resizable_axes = resizable_axes
         self.maxshape = maxshape
         
+        match self.dtype.kind:
+            case "i": self.dkind = "integer"
+            case "c": self.dkind = "complex"
+            case "f": self.dkind = "real"
+            case _: self.dkind = "unknown"
         self.get_data_range()
+        
+        self.slice_axis = 0
+        self.slice_index = 0
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> np.ndarray:
         return self.data[key]
-    
+
     def __repr__(self) -> str:
         output_str_0 = f"SPMH5 dataset \"{self.name}\" holding a rank-{self.rank} numpy array of shape {self.shape}, dtype numpy.{self.dtype},"
         output_str_1 = f" with values in the range [{self.min:.4f} {self.units} to {self.max:.4f} {self.units}],"
@@ -319,53 +327,118 @@ class Dataset:
         diffs = np.diff(arr)
         return np.allclose(diffs, diffs[0], rtol = rtol, atol = atol)
 
-    def get_slice(self, slice_indices: int | tuple[int] = 0, slice_axes: int | tuple[int] = 0) -> np.ndarray:
+
+
+    def set_slice_axis(self, axis: int = 0) -> None:
+        if axis < self.rank + 1: self.slice_axis = axis
+        axis_length = self.shape[self.slice_axis]
+        if self.slice_index > axis_length: self.slice_index = axis_length
+        return
+
+    def set_slice_index(self, index: int = 0) -> None:
+        axis_length = self.shape[self.slice_axis]
+        if index < axis_length + 1: self.slice_index = index
+        else: raise Exception(f"Cannot set slice index to {index} for axis {self.slice_axis} with length {axis_length}")
+        self.slice_index = index
+        return
+
+    def get_slice(self, slice_index: int | None = None, slice_axis: int | None = None) -> np.ndarray:
+        array = self.data.copy()
         match self.rank:
-            case 1: sliced_data = self.data
-            case 2: sliced_data = self.data
+            case 1: sliced_data = array
+            case 2: sliced_data = array
+            case 3:
+                if isinstance(slice_axis, int): self.set_slice_axis(slice_axis)
+                if isinstance(slice_index, int): self.set_slice_index(slice_index)                
+                match self.slice_axis:
+                    case 0: sliced_data = array[self.slice_index]
+                    case 1: sliced_data = array[:, self.slice_index]
+                    case 2: sliced_data = array[:, :, self.slice_index]
             case _: raise Exception(f"Cannot slice {self.rank}-dimensional data")
         return sliced_data
 
-    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), extent: tuple[tuple] | None = None) -> plt_fig.Figure:
-        if isinstance(data, np.ndarray): arr = data
-        else: arr = self.data
+    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, cmap: str = "Greys_r",
+                  slice_axis: int | None = None, slice_index: int | None = None, phase: float = .3) -> plt_fig.Figure:
+        if isinstance(slice_axis, int): self.set_slice_axis(slice_axis)
+        if isinstance(slice_index, int): self.set_slice_index(slice_index)
         
+        if self.dkind == "complex": fig = self.show_complex_data(data = data, figsize = figsize, data_range = data_range, phase = phase)
+        else: fig = self.show_real_data(data = data, figsize = figsize, data_range = data_range, cmap = cmap)
+        return fig
+
+    def show_real_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, cmap: str = "Greys_r") -> plt_fig.Figure:
+        array = data.copy() if isinstance(data, np.ndarray) else self.data.copy()
+        fig, ax = plt.subplots(figsize = figsize)
+
         match self.rank:
             case 1:
-                if np.issubdtype(self.dtype, np.complexfloating):
-                    fig = plt.figure(figsize = figsize)
-                    ax = fig.add_subplot(projection = "3d")
-                    x_values = np.arange(len(arr))
-                    y_values = np.real(arr)
-                    z_values = np.imag(arr)
-                    
-                    ax.plot3D(x_values, y_values, z_values)
-                else:
-                    fig, ax = plt.subplots(figsize = figsize)
-                    ax.plot(arr)
-                    
+                if isinstance(data_range, np.ndarray):
+                    if data_range.ndim == 1: extent = (data_range[0], data_range[1])
+                    else: extent = (data_range[0, 0], data_range[0, 1])
+                    ax.plot(np.linspace(extent[0], extent[1], num = len(array)), array)
+                else: ax.plot(array)
             case 2:
-                if np.issubdtype(self.dtype, np.complexfloating):
-                    fig = complex_plot(arr, figsize = figsize, phase_shift = .3)
-                    ax = fig.get_axes()[0]
-                else:
-                    fig, ax = plt.subplots(figsize = figsize)
-                    try: ax.imshow(arr, extent = extent) # type: ignore
-                    except: ax.imshow(arr)
-                return fig
-            
-            case 3: # Improve slicing later
-                data_slice = arr[0]
-                if np.issubdtype(self.dtype, np.complexfloating):
-                    fig = complex_plot(data_slice, figsize = figsize, phase_shift = .3)
-                    ax = fig.get_axes()[0]
-                else:
-                    fig, ax = plt.subplots(figsize = figsize)
-                    ax.imshow(data_slice)
+                if isinstance(data_range, np.ndarray):
+                    extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
+                    ax.imshow(array, extent = extent, origin = "lower", cmap = cmap) # type: ignore
+                else: ax.imshow(array, origin = "lower", cmap = cmap)            
+            case 3:
+                data_slice = self.get_slice()
+                if isinstance(data_range, np.ndarray):
+                    match self.slice_axis:
+                        case 0: extent = (data_range[1, 0], data_range[1, 1], data_range[2, 0], data_range[2, 1])
+                        case 1: extent = (data_range[0, 0], data_range[0, 1], data_range[2, 0], data_range[2, 1])
+                        case 2: extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
+                    ax.imshow(data_slice, extent = extent, origin = "lower", cmap = cmap)
+                else: ax.imshow(data_slice, origin = "lower", cmap = cmap)
             case _:
                 raise Exception("I do not know yet how to represent these data")
-        
-        ax.set_title(self.name)
+        return fig
+
+    def show_complex_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, phase: float = .3) -> plt_fig.Figure:
+        array = data.copy() if isinstance(data, np.ndarray) else self.data.copy()
+
+        match self.rank:
+            case 1:
+                fig = plt.figure(figsize = figsize)
+                ax = fig.add_subplot(projection = "3d")
+                
+                if isinstance(data_range, np.ndarray):
+                    if data_range.ndim == 1: extent = (data_range[0], data_range[1])
+                    else: extent = (data_range[0, 0], data_range[0, 1])
+                    x_values = np.linspace(extent[0], extent[1], len(array))
+                    ax.plot3D(x_values, np.real(array), np.imag(array))
+                else:
+                    x_values = np.arange(len(array))
+                    ax.plot3D(x_values, np.real(array), np.imag(array))
+            case 2:
+                fig, ax = plt.subplots(figsize = figsize)                
+                if isinstance(data_range, np.ndarray):
+                    extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
+                    fig = complex_plot(array, phase_shift = phase, extent = extent, origin = "lower") # type: ignore
+                else:
+                    fig = complex_plot(array, phase_shift = phase)
+            case 3:
+                data_slice = self.get_slice()
+                if isinstance(data_range, np.ndarray):
+                    match self.slice_axis:
+                        case 0: extent = (data_range[1, 0], data_range[1, 1], data_range[2, 0], data_range[2, 1])
+                        case 1: extent = (data_range[0, 0], data_range[0, 1], data_range[2, 0], data_range[2, 1])
+                        case 2: extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
+                    fig = complex_plot(data_slice, figsize = figsize, extent = extent, origin = "lower", phase_shift = phase)
+                fig = complex_plot(data_slice, figsize = figsize, phase_shift = phase)
+            case _:
+                raise Exception("I do not know yet how to represent these data")
+        return fig
+
+    def visualize(self) -> plt_fig.Figure:
+        title = f"SPMH5 Dataset \"{self.name}\" holding a {self.dkind}-valued numpy array\nwith values in the range [{self.min:.4f} {self.units} to {self.max:.4f} {self.units}]"
+        match self.rank:
+            case 3:
+                fig = represent_as_cube(title = title, array = self.data, ranges = np.array([[0, 0, 0], list(self.shape)]).T,
+                                        axis_names = [f"axis[{index}] [{self.shape[index]} pts]" for index in range(3)], edge_color = "#ffffff")
+            case _:
+                raise Exception(f"Visualize is not yet implemented for {self.rank}-dimensional Dataset objects")
         return fig
 
 
@@ -390,9 +463,17 @@ class Datagrid:
         self.min = self.dataset.min
         self.max = self.dataset.max
         
+        self.axis_names = [axis.name for axis in self.axes]
         self.axis_units = [axis.units for axis in self.axes]
         self.axis_ranges = [[axis.min, axis.max] for axis in self.axes]
         self.axes_are_linear = all([axis.is_linear() for axis in self.axes])
+
+    def __len__(self) -> int:
+        return len(self.axes) + 1
+
+    def __getitem__(self, key) -> Dataset:
+        if key == 0: return self.dataset
+        else: return self.axes[key - 1]
 
     def __repr__(self) -> str:
         axis_dataset_names = ", ".join([axis.name for axis in self.axes])
@@ -405,11 +486,13 @@ class Datagrid:
         else: return output_str_0 + output_str_2 + axis_strings + "\n"
 
     @classmethod
-    def from_frame(cls, dataset: Dataset, frame: CoordinateFrame = CoordinateFrame(), axes_names: list[str] = [], include_boundary: bool = True, attrs: dict = {}) -> Datagrid:
+    def from_frame(cls, dataset: Dataset, frame: CoordinateFrame = CoordinateFrame(), axes_names: list[str] = [], include_boundaries: bool | Sequence[bool] = True, attrs: dict = {}) -> Datagrid:
         dset_shape = dataset.shape
         axis_ds_list = []
         
-        for dim, (points, limits, units, name) in enumerate(zip(dset_shape, frame.ranges, frame.units, axes_names)):
+        if not isinstance(include_boundaries, Sequence): include_boundaries = [include_boundaries for _ in range(len(dset_shape))]
+        
+        for dim, (points, limits, units, name, include_boundary) in enumerate(zip(dset_shape, frame.ranges, frame.units, axes_names, include_boundaries)):
             if include_boundary:
                 values = np.linspace(limits[0], limits[1], points)
             else:
@@ -423,10 +506,6 @@ class Datagrid:
 
     def set_dataset(self, dataset: Dataset) -> None:
         self.dataset = dataset
-        return
-    
-    def set_frame(self, frame: CoordinateFrame) -> None:
-        self.frame = frame
         return
     
     def set_axes(self, axes: list[Dataset]) -> None:
@@ -445,11 +524,53 @@ class Datagrid:
         frame = CoordinateFrame(ranges = self.axis_ranges, anchor = anchor, units = self.axis_units)
         return frame
 
-    def show_data(self, figsize: tuple = (8, 6)) -> plt_fig.Figure:
-        try:
-            extent = (self.axes[0].min, self.axes[0].max, self.axes[1].min, self.axes[1].max)
-            fig = self.dataset.show_data(figsize = figsize, extent = extent) # type: ignore
-        except:
-            fig = self.dataset.show_data(figsize = figsize) # type: ignore
+
+
+    def set_slice_axis(self, axis: int = 0) -> None:
+        if axis < self.rank + 1: self.dataset.slice_axis = axis
+        axis_length = self.shape[self.dataset.slice_axis]
+        if self.dataset.slice_index > axis_length: self.dataset.slice_index = axis_length
+        return
+
+    def set_slice_index(self, index: int = 0) -> None:
+        axis_length = self.shape[self.dataset.slice_axis]
+        if index < axis_length + 1: self.dataset.slice_index = index
+        else: raise Exception(f"Cannot set slice index to {index} for axis {self.dataset.slice_axis} with length {axis_length}")
+        self.dataset.slice_index = index
+        return
+
+    def get_slice(self, slice_index: int | None = None, slice_axis: int | None = None) -> np.ndarray:
+        array = self.data.copy()
+        match self.rank:
+            case 1: sliced_data = array
+            case 2: sliced_data = array
+            case 3:
+                if isinstance(slice_axis, int): self.set_slice_axis(slice_axis)
+                if isinstance(slice_index, int): self.set_slice_index(slice_index)                
+                match self.dataset.slice_axis:
+                    case 0: sliced_data = array[self.dataset.slice_index]
+                    case 1: sliced_data = array[:, self.dataset.slice_index]
+                    case 2: sliced_data = array[:, :, self.dataset.slice_index]
+            case _: raise Exception(f"Cannot slice {self.rank}-dimensional data")
+        return sliced_data
+
+    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), cmap: str = "Greys_r",
+                  slice_axis: int | None = None, slice_index: int | None = None, phase: float = .3) -> plt_fig.Figure:
+        if isinstance(slice_axis, int): self.set_slice_axis(slice_axis)
+        if isinstance(slice_index, int): self.set_slice_index(slice_index)
+        
+        fig = self.dataset.show_data(data = data, data_range = np.array(self.axis_ranges), figsize = figsize, cmap = cmap, slice_axis = slice_axis, slice_index = slice_index, phase = phase)
         return fig
+
+    def visualize(self) -> plt_fig.Figure:
+        title_0 = f"SPMH5 Datagrid \"{self.name}\" holding a {self.dataset.dkind}-valued numpy array of shape {self.shape}\nwith values in the range [{self.min:.4f} {self.units} to {self.max:.4f} {self.units}]\n"
+        title_1 = f"and {len(self.axes)} axis datasets"
+        match self.rank:
+            case 3:
+                fig = represent_as_cube(title = title_0 + title_1, array = self.dataset.data, ranges = np.array(self.axis_ranges),
+                                        axis_names = self.axis_names, axis_units = self.axis_units, edge_color = "#ffffff")
+            case _:
+                raise Exception(f"Visualize is not yet implemented for {self.rank}-dimensional Dataset objects")
+        return fig
+
 
