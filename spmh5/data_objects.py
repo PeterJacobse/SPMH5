@@ -27,7 +27,7 @@ def complex_to_rgba(input_array: np.ndarray = np.zeros((2, 2)), phase_shift: flo
     rgba = np.concatenate((rgb, np.full_like(rgb, alpha)), axis = 2)[:, :, :4]
     return rgba
 
-def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), phase_shift: float = 0., extent: tuple | None = None, origin: Literal["lower", "upper"] = "lower", x_label: str = "", y_label: str = "") -> plt_fig.Figure:
+def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), title: str = "", phase_shift: float = 0., extent: tuple | None = None, origin: Literal["lower", "upper"] = "lower", x_label: str = "", y_label: str = "") -> plt_fig.Figure:
     """Convenience function for plotting a complex array
 
     Args:
@@ -36,6 +36,7 @@ def complex_plot(array: np.ndarray, figsize: tuple = (4, 4), phase_shift: float 
     """
     rgba_array = complex_to_rgba(array, phase_shift = phase_shift)
     fig, ax = plt.subplots(figsize = figsize)
+    if title: ax.set_title(title)
     ax.imshow(rgba_array, extent = extent, origin = origin)
     if x_label: ax.set_xlabel(x_label)
     if y_label: ax.set_ylabel(y_label)
@@ -335,13 +336,15 @@ class Dataset:
 
 
 
-    def set_slice(self, axes: tuple | list | None = None, indices: tuple | list | None = None) -> None:
-        self.set_slice_axes(axes)
+    def set_slice(self, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None) -> None:
+        self.set_slice_axes(slice_axes)
         self.set_slice_indices(indices)
         return
 
-    def set_slice_axes(self, axes: tuple | list | None = None) -> None:
-        if not isinstance(axes, list | tuple): return
+    def set_slice_axes(self, axes: int | tuple | list | None = None) -> None:
+        if isinstance(axes, int): axes = (axes,)
+        if not isinstance(axes, tuple | list): return
+        
         if not len(axes) == len(self.slice_axes): raise Exception(f"Invalid slice axes. Axes {axes} on rank-{self.rank} dataset will not generate a 2D slice.")
         if np.any(np.array(axes)) > self.rank - 1: raise Exception(f"Invalid slice axes. Axes {axes} exceed the rank ({self.rank}) of the dataset.")
         
@@ -353,8 +356,10 @@ class Dataset:
         self.remaining_axes = tuple([axis_index for axis_index in range(self.rank) if not axis_index in self.slice_axes])
         return
 
-    def set_slice_indices(self, indices: tuple | list | None = None) -> None:
-        if not isinstance(indices, list | tuple): return
+    def set_slice_indices(self, indices: int | tuple | list | None = None) -> None:
+        if isinstance(indices, int): indices = (indices,)
+        if not isinstance(indices, tuple | list): return
+        
         if not len(indices) == len(self.slice_axes): raise Exception(f"Invalid number ({len(indices)}) of slice indices. Expected {len(self.slice_indices)}.")
         
         self.slice_indices = indices
@@ -363,11 +368,15 @@ class Dataset:
             if index > axis_length - 1: raise Exception(f"Cannot set slice index to {index} for axis {axis} with length {axis_length}")
         return
 
-    def get_slice(self, data: np.ndarray | None = None, axes: tuple | list | None = None, indices: tuple | list | None = None) -> np.ndarray:
+    def get_slice(self, data: np.ndarray | None = None, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None, transpose: bool = False) -> tuple[np.ndarray, dict[str, object]]:
+        if isinstance(slice_axes, int): slice_axes = (slice_axes,)
+        if isinstance(indices, int): indices = (indices,)
+        
         if not isinstance(indices, tuple | list): indices = self.slice_indices
-        if not isinstance(axes, tuple | list): axes = self.slice_axes        
+        if not isinstance(slice_axes, tuple | list): slice_axes = self.slice_axes
         if not isinstance(data, np.ndarray): data = self.data.copy()
         
+        remaining_axes = tuple()
         match data.ndim:
             case 1:
                 sliced_data = data
@@ -375,22 +384,31 @@ class Dataset:
                 sliced_data = data
             case _:
                 slice_list = [slice(None) for _ in range(self.rank)]
-                for axis, index in zip(axes, indices):
+                for axis, index in zip(slice_axes, indices):
                     slice_list[axis] = index
                 sliced_data = data[tuple(slice_list)]
-        return sliced_data
-
-    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, cmap: str = "Greys_r",
-                  axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
-        data_slice = self.get_slice(data, axes, indices)
+                
+                remaining_axes = [axis_index for axis_index in range(data.ndim) if not axis_index in slice_axes]
         
-        if self.dkind == "complex": fig = self.show_complex_data(data = data_slice, figsize = figsize, data_range = data_range, phase = phase, x_label = x_label, y_label = y_label)
-        else: fig = self.show_real_data(data = data_slice, figsize = figsize, data_range = data_range, cmap = cmap, x_label = x_label, y_label = y_label)
+        if transpose:
+            sliced_data = sliced_data.transpose()
+            remaining_axes.reverse()
+        
+        slice_info = {"slice_axes": slice_axes, "slice_indices": indices, "remaining_axes": remaining_axes}
+        return sliced_data, slice_info
+
+    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), title: str = "", data_range: np.ndarray | None = None, cmap: str = "Greys_r", transpose: bool = False,
+                  slice_axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
+        data_slice, slice_info = self.get_slice(data, slice_axes, indices, transpose)
+        
+        if self.dkind == "complex": fig = self.show_complex_data(data = data_slice, figsize = figsize, title = title, data_range = data_range, phase = phase, x_label = x_label, y_label = y_label)
+        else: fig = self.show_real_data(data = data_slice, figsize = figsize, title = title, data_range = data_range, cmap = cmap, x_label = x_label, y_label = y_label)
         return fig
 
-    def show_real_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, cmap: str = "Greys_r", x_label: str = "", y_label: str = "") -> plt_fig.Figure:
+    def show_real_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), title: str = "", data_range: np.ndarray | None = None, cmap: str = "Greys_r", x_label: str = "", y_label: str = "") -> plt_fig.Figure:
         array = data.copy() if isinstance(data, np.ndarray) else self.data.copy()
         fig, ax = plt.subplots(figsize = figsize)
+        ax.set_title(title)
 
         match self.rank:
             case 1:
@@ -403,18 +421,21 @@ class Dataset:
                 if isinstance(data_range, np.ndarray):
                     extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
                     ax.imshow(array, extent = extent, origin = "lower", cmap = cmap) # type: ignore
-                else: ax.imshow(array, origin = "lower", cmap = cmap)            
+                else: ax.imshow(array, origin = "lower", cmap = cmap)
+                ax.set_xlabel(x_label)
+                ax.set_ylabel(y_label)
             case _:
                 raise Exception(f"Rank-{array.ndim} data array cannot be shown")
         return fig
 
-    def show_complex_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), data_range: np.ndarray | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
+    def show_complex_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), title: str = "", data_range: np.ndarray | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
         array = data.copy() if isinstance(data, np.ndarray) else self.data.copy()
 
         match array.ndim:
             case 1:
                 fig = plt.figure(figsize = figsize)
                 ax = fig.add_subplot(projection = "3d")
+                ax.set_title(title)
                 
                 if isinstance(data_range, np.ndarray):
                     if data_range.ndim == 1: extent = (data_range[0], data_range[1])
@@ -427,9 +448,9 @@ class Dataset:
             case 2:              
                 if isinstance(data_range, np.ndarray):
                     extent = (data_range[0, 0], data_range[0, 1], data_range[1, 0], data_range[1, 1])
-                    fig = complex_plot(array, phase_shift = phase, extent = extent, origin = "lower", x_label = x_label, y_label = y_label) # type: ignore
+                    fig = complex_plot(array, title = title, figsize = figsize, phase_shift = phase, extent = extent, origin = "lower", x_label = x_label, y_label = y_label) # type: ignore
                 else:
-                    fig = complex_plot(array, phase_shift = phase, x_label = x_label, y_label = y_label)
+                    fig = complex_plot(array, title = title, figsize = figsize, phase_shift = phase, x_label = x_label, y_label = y_label)
             case _:
                 raise Exception(f"Rank-{array.ndim} data array cannot be shown")
         return fig
@@ -535,33 +556,74 @@ class Datagrid:
 
 
 
-    def set_slice(self, axes: tuple | list | None = None, indices: tuple | list | None = None) -> None:
-        self.dataset.set_slice(axes, indices)
+    def set_slice(self, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None) -> None:
+        self.dataset.set_slice(slice_axes, indices)
         self.slice_axes = self.dataset.slice_axes
         self.slice_indices = self.dataset.slice_indices
         self.remaining_axes = self.dataset.remaining_axes
         return
 
-    def set_slice_axes(self, axes: tuple | list | None = None) -> None:
+    def set_slice_axes(self, axes: int | tuple | list | None = None) -> None:
         self.dataset.set_slice_axes(axes)
         self.slice_axes = self.dataset.slice_axes
         self.slice_indices = self.dataset.slice_indices
         self.remaining_axes = self.dataset.remaining_axes
         return
 
-    def set_slice_indices(self, indices: tuple | list | None = None) -> None:
+    def set_slice_indices(self, indices: int | tuple | list | None = None) -> None:
         self.dataset.set_slice_indices(indices)
         self.slice_axes = self.dataset.slice_axes
         self.slice_indices = self.dataset.slice_indices
         self.remaining_axes = self.dataset.remaining_axes
         return
 
-    def get_slice(self, data: np.ndarray | None = None, axes: tuple | list | None = None, indices: tuple | list | None = None) -> np.ndarray:
-        return self.dataset.get_slice(data, axes, indices)
+    def get_slice(self, data: np.ndarray | None = None, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None, transpose: bool = False) -> tuple[np.ndarray, dict[str, object]]:
+        if isinstance(slice_axes, int): slice_axes = (slice_axes,)
+        if isinstance(indices, int): indices = (indices,)
+        
+        if not isinstance(slice_axes, tuple | list): slice_axes = self.slice_axes
+        if not isinstance(indices, tuple | list): indices = self.slice_indices
+        
+        slice_data, slice_info = self.dataset.get_slice(data, slice_axes, indices)
+        slice_axes, indices, remaining_axes = [slice_info.get(key) for key in ["slice_axes", "slice_indices", "remaining_axes"]]
+        
+        slice_axis_names = []
+        slice_axis_values = []
+        slice_axis_units = []
+        
+        for axis, index in zip(slice_axes, indices):
+            axis_ds: Dataset = self.axes[axis]
+            slice_axis_values.append(axis_ds.data[index])
+            slice_axis_names.append(axis_ds.name)
+            slice_axis_units.append(axis_ds.units)
+        
+        new_slice_info = {"slice_axes": slice_axis_names, "slice_indices": list(indices), "slice_values": slice_axis_values, "slice_units": slice_axis_units}
+        
+        if transpose:
+            slice_data = slice_data.transpose()
+            remaining_axes = list(remaining_axes)
+            remaining_axes.reverse()
+        
+        for index, axis in enumerate(remaining_axes):
+            axis_ds: Dataset = self.axes[axis]
+            axis_name = axis_ds.name
+            axis_units = axis_ds.units
 
-    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), cmap: str = "Greys_r",
-                  axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:        
-        fig = self.dataset.show_data(data = data, axes = axes, indices = indices, data_range = np.array(self.axis_ranges), figsize = figsize, cmap = cmap, phase = phase, x_label = x_label, y_label = y_label)
+            if index == 0: new_slice_info.update({"x_axis_name": axis_name, "x_axis_units": axis_units})
+            else: new_slice_info.update({"y_axis_name": axis_name, "y_axis_units": axis_units})
+        
+        return slice_data, new_slice_info
+
+    def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), cmap: str = "Greys_r", transpose: bool = False,
+                  slice_axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
+        slice_data, slice_info = self.get_slice(data, slice_axes = slice_axes, indices = indices, transpose = transpose)
+        
+        x_label = f"{slice_info.get("x_axis_name", "")} ({slice_info.get("x_axis_units")})"
+        y_label = f"{slice_info.get("y_axis_name", "")} ({slice_info.get("y_axis_units")})"
+        
+        title = f"data slice at (" + "".join([f"{name} = {value} {unit})" for name, value, unit in zip(slice_info.get("slice_axes", ""), slice_info.get("slice_values", ""), slice_info.get("slice_units", ""))]) 
+        
+        fig = self.dataset.show_data(data = data, slice_axes = slice_axes, indices = indices, data_range = np.array(self.axis_ranges), figsize = figsize, title = title, cmap = cmap, transpose = transpose, phase = phase, x_label = x_label, y_label = y_label)
         return fig
 
     def visualize(self) -> plt_fig.Figure:
