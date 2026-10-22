@@ -2,10 +2,13 @@ import matplotlib.figure as plt_fig
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from typing import Any, Literal
+from numpy.typing import NDArray
+from typing import Any, Literal, TypeVar
 from collections.abc import Sequence
-NPSequence = Sequence | np.ndarray
 Numeric = float | int | complex | np.integer | np.floating
+T = TypeVar("T", bound = float | int | complex | np.integer | np.floating)
+NPSequence = Sequence[T] | NDArray[T] # type: ignore
+NestedNPSequence = Sequence[Sequence[T]] | Sequence[NDArray[T]] | NDArray[T] # type: ignore
 
 
 
@@ -71,8 +74,8 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
                         np.array([[face[0][2], face[1][2]], [face[3][2], face[2][2]]]),
                         color = face_color, edgecolor = edge_color, linewidth = 2, alpha = 0.6)
 
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
+    ax.xaxis.pane.fill = False # type: ignore
+    ax.yaxis.pane.fill = False # type: ignore
     ax.zaxis.pane.fill = False
     
     # Anchor location is understood to be in fractional coordinates
@@ -91,7 +94,7 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
     ax.invert_xaxis()
     
     #ax.text(0, 1.5, 0, f"dtype: {array.dtype}", color = "#ffffff")
-    [axis.line.set_color(color) for axis, color in zip ([ax.xaxis, ax.yaxis, ax.zaxis], axis_colors)]
+    [axis.line.set_color(color) for axis, color in zip ([ax.xaxis, ax.yaxis, ax.zaxis], axis_colors)] # type: ignore
     return fig
 
 
@@ -100,11 +103,11 @@ class CoordinateFrame:
     """Class describing a rectilinear coordinate frame with ranges in the x (and potentially y, z, a) dimensions expressed in its own coordinate system.
     An anchor with the same dimensionality defines rotations (self.angles) and translations (self.offset) with respect to a global coordinate system this frame may be placed in. 
     """
-    def __init__(self, x_range: Numeric | NPSequence[Numeric] | None = None, y_range: Numeric | NPSequence[Numeric] | None = None,
-                 z_range: Numeric | NPSequence[Numeric] | None = None, a_range: Numeric | NPSequence[Numeric] | None = None,
-                 ranges: NPSequence[Numeric] | NPSequence[NPSequence[Numeric]] | None = None,
-                 units: str | NPSequence[str] = "nm", offset: Numeric | NPSequence[Numeric] = 0, angles: Numeric | NPSequence[Numeric] = 0, angle_units: Literal["degree", "rad"] = "degree",
-                 anchor: NPSequence[Numeric] | Numeric = 0.):
+    def __init__(self, x_range: Numeric | NPSequence | None = None, y_range: Numeric | NPSequence | None = None,
+                 z_range: Numeric | NPSequence | None = None, a_range: Numeric | NPSequence | None = None,
+                 ranges: NPSequence | None = None,
+                 units: str | list[str] = "nm", offset: Numeric | NPSequence = 0, angles: Numeric | NPSequence = 0, angle_units: Literal["degree", "rad"] = "degree",
+                 anchor: NPSequence | Numeric = 0.):
         self.rank: int = 0
         
         self.x_range = None
@@ -131,11 +134,11 @@ class CoordinateFrame:
 
 
     
-    def set_range(self, value: Numeric | NPSequence[Numeric] | NPSequence[NPSequence[Numeric]], axis: int = -1) -> None:
+    def set_range(self, value: Numeric | NPSequence | NestedNPSequence, axis: int = -1) -> None:
         """self.ranges are expressed in local coordinates (disregarding any offset)
         """
         if isinstance(value, Numeric): value = [-value * self.anchor[axis], value * (1 - self.anchor[axis])]
-        if isinstance(value[0], NPSequence): self.ranges = list(value)
+        if isinstance(value[0], list | tuple | np.ndarray): self.ranges = list(value)
         
         if isinstance(value[0], Numeric):
             if hasattr(self, "ranges") and axis > -1:
@@ -158,7 +161,7 @@ class CoordinateFrame:
         if not hasattr(self, "angles"): self.angles = [0 for _ in range(self.rank)]
         return
     
-    def set_units(self, value: str | NPSequence[str], axis: int = -1) -> None:
+    def set_units(self, value: str | list[str], axis: int = -1) -> None:
         if isinstance(value, str):
             if axis > -1 and axis < self.rank: self.units[axis] = value
             else: self.units = [value for _ in range(self.rank)]
@@ -166,25 +169,25 @@ class CoordinateFrame:
         if isinstance(value, list | tuple | np.ndarray): self.units = list(value)
         return
     
-    def set_offset(self, value: Numeric | NPSequence[Numeric], axis: int = -1) -> None:
+    def set_offset(self, value: Numeric | NPSequence, axis: int = -1) -> None:
         if isinstance(value, Numeric) and axis > -1 and axis < self.rank: self.offset[axis] = value # type: ignore
-        if isinstance(value, NPSequence): self.offset = list(value)
+        if isinstance(value, list | tuple | np.ndarray): self.offset = list(value)
         return
 
-    def set_angle(self, value: Numeric | NPSequence[Numeric], axis: int = -1) -> None:
+    def set_angle(self, value: Numeric | NPSequence, axis: int = -1) -> None:
         if isinstance(value, Numeric) and axis > -1 and axis < self.rank: self.angles[axis] = value # type: ignore
-        if isinstance(value, NPSequence): self.angles = list(value)
+        if isinstance(value, list | tuple | np.ndarray): self.angles = list(value)
         return
         
     def set_angle_units(self, value: Literal["degree", "rad"]) -> None:
         self.angle_units = value
         return
 
-    def set_anchor(self, anchor: NPSequence[Numeric] | Numeric = 0., axis: int = -1) -> None:
+    def set_anchor(self, anchor: NPSequence | Numeric = 0., axis: int = -1) -> None:
         """self.anchor is expressed in fractional coordinates"""
         if not hasattr(self, "ndim"):
             if isinstance(anchor, Numeric): anchor = [anchor]
-            if not isinstance(anchor, NPSequence):
+            if not isinstance(anchor, list | tuple | np.ndarray):
                 raise Exception(f"Invalid type {type(anchor)} for anchor passed to CoordinateFrame. The anchor is supposed to represent the rotation/translation point of the frame in fractional coordinates.")
             self.anchor = np.array(anchor)
             self.ndim = self.anchor.ndim
@@ -212,9 +215,8 @@ class Dataset:
     """Container class mirroring h5py.Dataset, with numpy data stored at self.data, along with units (self.units), a name (self.name), and attributes (self.attrs).
     This class can be used outside of the context of HDF5 files.
     """
-    def __init__(self, data: list | np.ndarray | None = None, shape: tuple[int] | None = None, dtype: np.dtype | None = None,
-                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, attrs: dict = {}, units: str = "", name: str = "",
-                 slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None):
+    def __init__(self, name: str = "", units: str = "", data: list | np.ndarray | None = None, shape: tuple[int] | None = None, dtype: np.dtype | None = None,
+                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, attrs: dict = {}, slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None):
         self.set_name(name)
         
         if isinstance(data, list):
@@ -376,7 +378,7 @@ class Dataset:
         if not isinstance(slice_axes, tuple | list): slice_axes = self.slice_axes
         if not isinstance(data, np.ndarray): data = self.data.copy()
         
-        remaining_axes = tuple()
+        remaining_axes = []
         match data.ndim:
             case 1:
                 sliced_data = data
@@ -410,7 +412,7 @@ class Dataset:
         fig, ax = plt.subplots(figsize = figsize)
         ax.set_title(title)
 
-        match self.rank:
+        match array.ndim:
             case 1:
                 if isinstance(data_range, np.ndarray):
                     if data_range.ndim == 1: extent = (data_range[0], data_range[1])
@@ -585,7 +587,8 @@ class Datagrid:
         if not isinstance(indices, tuple | list): indices = self.slice_indices
         
         slice_data, slice_info = self.dataset.get_slice(data, slice_axes, indices)
-        slice_axes, indices, remaining_axes = [slice_info.get(key) for key in ["slice_axes", "slice_indices", "remaining_axes"]]
+        remaining_axes = slice_info.get("remaining_axes")
+        assert isinstance(remaining_axes, list)
         
         slice_axis_names = []
         slice_axis_values = []
@@ -601,7 +604,7 @@ class Datagrid:
         
         if transpose:
             slice_data = slice_data.transpose()
-            remaining_axes = list(remaining_axes)
+            remaining_axes = remaining_axes
             remaining_axes.reverse()
         
         for index, axis in enumerate(remaining_axes):
@@ -609,10 +612,10 @@ class Datagrid:
             axis_name = axis_ds.name
             axis_units = axis_ds.units
 
-            if index == 0: new_slice_info.update({"x_axis_name": axis_name, "x_axis_units": axis_units})
-            else: new_slice_info.update({"y_axis_name": axis_name, "y_axis_units": axis_units})
+            if index == 0: new_slice_info.update({"x_axis_name": axis_name, "x_axis_units": axis_units}) # type: ignore
+            else: new_slice_info.update({"y_axis_name": axis_name, "y_axis_units": axis_units}) # type: ignore
         
-        return slice_data, new_slice_info
+        return slice_data, new_slice_info # type: ignore
 
     def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), cmap: str = "Greys_r", transpose: bool = False,
                   slice_axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
@@ -621,7 +624,8 @@ class Datagrid:
         x_label = f"{slice_info.get("x_axis_name", "")} ({slice_info.get("x_axis_units")})"
         y_label = f"{slice_info.get("y_axis_name", "")} ({slice_info.get("y_axis_units")})"
         
-        title = f"data slice at (" + "".join([f"{name} = {value} {unit})" for name, value, unit in zip(slice_info.get("slice_axes", ""), slice_info.get("slice_values", ""), slice_info.get("slice_units", ""))]) 
+        [axes, values, units] = [slice_info.get(key, "") for key in ["slice_axes", "slice_values", "slice_units"]]        
+        if isinstance(axes, list) and isinstance(values, list) and isinstance(units, list): title = f"data slice at (" + "".join([f"{name} = {value} {unit})" for name, value, unit in zip(axes, values, units)]) 
         
         fig = self.dataset.show_data(data = data, slice_axes = slice_axes, indices = indices, data_range = np.array(self.axis_ranges), figsize = figsize, title = title, cmap = cmap, transpose = transpose, phase = phase, x_label = x_label, y_label = y_label)
         return fig
