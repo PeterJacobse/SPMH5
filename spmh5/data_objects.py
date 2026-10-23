@@ -216,7 +216,7 @@ class Dataset:
     This class can be used outside of the context of HDF5 files.
     """
     def __init__(self, name: str = "", units: str = "", data: list | np.ndarray | None = None, shape: tuple[int] | None = None, dtype: np.dtype | None = None,
-                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, attrs: dict = {}, slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None):
+                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None, attrs: dict = {}):
         self.set_name(name)
         
         if isinstance(data, list):
@@ -249,7 +249,8 @@ class Dataset:
         self.slice_axes = tuple([index for index in range(self.rank - 2)])
         self.slice_indices = tuple([0 for _ in range(self.rank - 2)])
         self.remaining_axes = ()
-        self.set_slice(slice_axes, slice_indices)
+        
+        self.set_slice(slice_axes, slice_indices)        
 
     def __getitem__(self, key) -> np.ndarray:
         return self.data[key]
@@ -490,8 +491,8 @@ class Datagrid:
         self.min = self.dataset.min
         self.max = self.dataset.max
         
-        self.slice_indices = self.dataset.slice_indices
         self.slice_axes = self.dataset.slice_axes
+        self.slice_indices = self.dataset.slice_indices        
         self.remaining_axes = self.dataset.remaining_axes
         
         # Attributes from the axes
