@@ -348,8 +348,10 @@ class Dataset:
         if isinstance(axes, int): axes = (axes,)
         if not isinstance(axes, tuple | list): return
         
-        if not len(axes) == len(self.slice_axes): raise Exception(f"Invalid slice axes. Axes {axes} on rank-{self.rank} dataset will not generate a 2D slice.")
-        if np.any(np.array(axes)) > self.rank - 1: raise Exception(f"Invalid slice axes. Axes {axes} exceed the rank ({self.rank}) of the dataset.")
+        if not len(axes) == len(self.slice_axes):
+            print(f"Warning: invalid slice axes. Axes {axes} on rank-{self.rank} dataset will not generate a 2D slice.")
+        if np.any(np.array(axes)) > self.rank - 1:
+            print(f"Warning: invalid slice axes. Axes {axes} exceed the rank ({self.rank}) of the dataset.")
         
         self.slice_axes = axes
         for axis_index, axis in enumerate(axes): # Reset the slice indices if they extend past the dataset end in the new slice orientation
@@ -363,12 +365,16 @@ class Dataset:
         if isinstance(indices, int): indices = (indices,)
         if not isinstance(indices, tuple | list): return
         
-        if not len(indices) == len(self.slice_axes): raise Exception(f"Invalid number ({len(indices)}) of slice indices. Expected {len(self.slice_indices)}.")
+        if not len(indices) == len(self.slice_axes):
+            print(f"Warning: invalid number ({len(indices)}) of slice indices. Expected {len(self.slice_indices)}.")
         
         self.slice_indices = indices
         for axis, index in zip(self.slice_axes, self.slice_indices):
             axis_length = self.shape[axis]
-            if index > axis_length - 1: raise Exception(f"Cannot set slice index to {index} for axis {axis} with length {axis_length}")
+            if index > axis_length - 1:
+                print(f"Cannot set slice index to {index} for axis {axis} with length {axis_length}")
+                self.slice_indices = tuple([0 for _ in range(len(self.slice_indices))])
+                break
         return
 
     def get_slice(self, data: np.ndarray | None = None, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None, transpose: bool = False) -> tuple[np.ndarray, dict[str, object]]:
@@ -641,5 +647,4 @@ class Datagrid:
             case _:
                 raise Exception(f"Visualize is not yet implemented for {self.rank}-dimensional Dataset objects")
         return fig
-
 

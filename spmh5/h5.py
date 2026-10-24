@@ -425,7 +425,7 @@ def get_file_dict(root: File | h5py.File, extract_datasets: bool = False) -> dic
         for dataset_name, dataset in group_datasets.items():
             dset_attrs = get_attributes(dataset)
             shape = list(getattr(dataset, "shape", []))
-            [dset_attrs.pop(key, None) for key in ["REFERENCE_LIST", "CLASS", "NAME", "DIMENSION_LIST"]]
+            [dset_attrs.pop(key, None) for key in ["REFERENCE_LIST", "DIMENSION_LIST"]]
             if dset_attrs.get("NX_class", "") == "NXaxis": continue # This tag signifies the dataset is an axis dataset
             
             cleaned_attrs = {}
@@ -510,7 +510,7 @@ def get_data_grids(root: File | h5py.File) -> tuple[dict[str, dict[str, dict[str
     return output, datagrids
 
 def get_file(file_path: str = ""):
-    return DataCollection.from_file(file_path)
+    return Datacollection.from_file(file_path)
 
 
 
@@ -1333,10 +1333,16 @@ def get_object(root_or_path: str | h5py.File | h5py.Group, internal_path: str = 
 
 
 
-class DataCollection:
+class IndentDumper(yaml.Dumper):
+    def increase_indent(self, flow: bool = False, indentless: bool = False):
+        return super(IndentDumper, self).increase_indent(flow, indentless = False)
+
+
+
+class Datacollection:
     """Class containing a collection of datagrids, instruments, and other file data
     """
-    def __init__(self, name: str = "unknown", creator: str = "unknown", date: str = "unknown", time: str = "unknown",
+    def __init__(self, name: str = "unknown", creator: str = "unknown", date: str = "unknown", time: str = "unknown", thumbnail: np.ndarray = np.zeros((12, 12, 3), dtype = np.uint8),
                  groups: dict = {}, instruments: dict = {}, other_datasets: dict = {}, attrs: dict = {}, data_grids: list[Datagrid] = [], default: str | Datagrid = ""):
         self.name = name
         self.creator = creator
@@ -1348,6 +1354,7 @@ class DataCollection:
         self.attrs = attrs
         self.data_grids = data_grids
         self.default = default
+        self.thumbnail = thumbnail
         
         for data_grid in data_grids:
             if data_grid.dataset.name == os.path.basename(self.default):
@@ -1355,7 +1362,7 @@ class DataCollection:
                 break
 
     def __repr__(self) -> str:
-        return f"SPMH5 DataCollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids. Use .info() for more information"
+        return f"SPMH5 Datacollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids. Use .info() for more information"
 
     def __getitem__(self, key) -> Datagrid:        
         return self.data_grids[key]
@@ -1364,24 +1371,24 @@ class DataCollection:
         return len(self.data_grids)
 
     def info(self) -> None:
-        print(f"SPMH5 DataCollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids.\n\n")
+        print(f"SPMH5 Datacollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids.\n\n")
         if len(self.data_grids) > 0:
-            print("Data grids (self.data_grids):")
+            print("Data grids (self.data_grids):\n")
             [print(data_grid) for data_grid in self.data_grids]
         if len(self.default) > 0:
-            print(f"Default dataset (self.default):")
+            print(f"Default dataset (self.default):\n")
             print(self.default)
         if len(self.instruments) > 0:
-            print(f"Instruments (self.instruments): ")
+            print(f"Instruments (self.instruments):\n")
             print_dict(self.instruments)
         if len(self.groups) > 0:
-            print(f"Groups (self.groups): ")
+            print(f"Groups (self.groups):\n")
             print_dict(self.groups)
         if len(self.attrs) > 0:
-            print(f"File attributes (self.attrs): ")
+            print(f"File attributes (self.attrs):\n")
             print_dict(self.attrs)
         if len(self.other_datasets) > 0:
-            print(f"Other datasets (self.other_datasets): ")
+            print(f"Other datasets (self.other_datasets):\n")
             print_dict(self.other_datasets)
         return
 
@@ -1413,14 +1420,18 @@ class DataCollection:
                 assert isinstance(eg_attrs, dict)
                 default = eg_attrs.get("default", "")
             
-        return cls(name = filename, creator = creator, date = file_date, time = file_time, groups = groups, instruments = file_dict["instruments"], other_datasets = file_dict["other_datasets"],
-                   attrs = root_attrs, data_grids = data_grids, default = default)
+            other_datasets = file_dict["other_datasets"]
+            tn_ds = None
+            if "thumbnail/thumbnail" in other_datasets.keys():
+                tn_ds = other_datasets["thumbnail/thumbnail"].get("dataset_object")
+            
+            if isinstance(tn_ds, Dataset): thumbnail = tn_ds[:]
+            else: thumbnail = np.zeros((12, 12, 4), dtype = np.uint8)
+            
+        return cls(name = filename, creator = creator, date = file_date, time = file_time, groups = groups, instruments = file_dict["instruments"], other_datasets = other_datasets,
+                   attrs = root_attrs, thumbnail = thumbnail, data_grids = data_grids, default = default)
 
     def to_file(self, file_path: str = ""):
         raise NotImplementedError()
 
 
-
-class IndentDumper(yaml.Dumper):
-    def increase_indent(self, flow: bool = False, indentless: bool = False):
-        return super(IndentDumper, self).increase_indent(flow, indentless = False)
