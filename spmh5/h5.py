@@ -174,6 +174,9 @@ class File(h5py.File):
     def create_datagrid(self, datagrid: Datagrid) -> tuple[h5py.Dataset, list[h5py.Dataset]]:
         return create_datagrid(self, datagrid)
 
+    def create_datacollection(self, data_collection: Datacollection) -> None:
+        return create_datacollection(self, data_collection)
+
     def set_default(self, main_dataset: h5py.Dataset):
         return set_default(main_dataset)
 
@@ -878,9 +881,21 @@ def create_datagrid(root: File | h5py.File, datagrid: Datagrid) -> tuple[h5py.Da
     create_attributes(entry_group, datagrid.attrs)
     return main_ds, axis_datasets
 
+def create_datacollection(root: File | h5py.File, data_collection: Datacollection) -> None:
+    for data_grid in data_collection.data_grids:
+        create_datagrid(root, data_grid)
+    
+    create_attributes(root, data_collection.attrs)
+    
+    for instrument in data_collection.instruments:
+        instr_name = instrument.get("name")
+        create_group(root, name = instr_name, attributes = instrument.items())        
+    return
+
 def set_default(main_dataset: h5py.Dataset) -> None:
     measurement_group = main_dataset.parent
     entry_group = measurement_group.parent
+    assert isinstance(entry_group, h5py.Group)
     create_attributes(entry_group, {"default": measurement_group.name})
     return
 
@@ -1356,10 +1371,11 @@ class Datacollection:
         self.default = default
         self.thumbnail = thumbnail
         
-        for data_grid in data_grids:
-            if data_grid.dataset.name == os.path.basename(self.default):
-                self.default = data_grid
-                break
+        if isinstance(self.default, str):
+            for data_grid in data_grids:
+                if data_grid.dataset.name == os.path.basename(self.default):
+                    self.default = data_grid
+                    break
 
     def __repr__(self) -> str:
         return f"SPMH5 Datacollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids. Use .info() for more information"
@@ -1433,5 +1449,6 @@ class Datacollection:
 
     def to_file(self, file_path: str = ""):
         raise NotImplementedError()
+
 
 

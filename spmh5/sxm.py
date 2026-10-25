@@ -2,81 +2,176 @@ import re, os, h5py, inspect
 import numpy as np
 from datetime import datetime, timezone
 from .file_picker import get_file_path_from_dialog
+from .h5 import Dataset, Datagrid, Datacollection, CoordinateFrame, File
 
 
 
-def get_raw_header(file_path: str = "", end_tag: str = ":SCANIT_END:") -> list:
+# SXM files: headers
+def get_raw_header(file_path: str = "", end_tag: str = ":SCANIT_END:") -> tuple[list, int]:
     if not file_path: file_path = get_file_path_from_dialog(extensions = ["sxm"], io = "load")
     if not os.path.isfile(file_path): raise Exception("Invalid file selected.")
-    raw_header = []
+    raw_header: list = []
+    end_tag_position: int = 0
     
     try:
         with open(file_path, "rb") as file:
-            for line in file:
-                decoded = line.decode().split()
+            while True:
+                current_pos = file.tell()
                 
+                line = file.readline()
+                if not line: break
+                decoded = line.decode('utf-8').split()
                 raw_header.append(decoded)
-                if end_tag in decoded: break
+                
+                if end_tag in decoded:
+                    # The binary data starts exactly where the NEXT line begins
+                    end_tag_position = file.tell()
+                    break
     except Exception as e: raise Exception(f"Unable to retrieve raw sxm header: {e}")
-    return raw_header
+    return raw_header, end_tag_position
 
-def get_header(file_path: str = "", end_tag: str = ":SCANIT_END:") -> dict:
-    raw_header = get_raw_header(file_path, end_tag)
+def get_header(file_path: str = "", end_tag: str = ":SCANIT_END:") -> tuple[dict, int]:
+    raw_header, end_tag_position = get_raw_header(file_path, end_tag)
     
-    tag_substitutions = {":NANONIS_VERSION:": "version", ":REC_DATE:": "creation_date", ":REC_TIME:": "creation_time", ":REC_TEMP:": "temperature"}
+    tag_substitutions = {":NANONIS_VERSION:": "Nanonis_version", ":SCANIT_TYPE:": "data_type", ":REC_DATE:": "creation_date", ":REC_TIME:": "creation_time", ":REC_TEMP:": "temperature (K)", ":SCAN_RANGE:": "domain (nm)", ":ACQ_TIME:": "scan_duration (s)", ":SCAN_FILE:": "file_path",
+                         ":COMMENT:": "comment", ":Z-CONTROLLER:": "z_controller", ":SCAN_ANGLE:": "angle (deg)", ":SCAN_OFFSET:": "offset (nm)", ":SCAN_PIXELS:": "shape", ":SCAN_DIR:": "scan_up", ":BIAS:": "V (V)", ":DATA_INFO:": "data"}
 
     header_dict = {}
     for index, line in enumerate(raw_header):
         if len(line) < 1 or not isinstance(line[0], str): continue
-        
+                
         if line[0] in tag_substitutions.keys():
-            value = raw_header[index + 1]
-            if len(value) == 1: value = value[0]
-            if not isinstance(value, str): continue
-            if value.isnumeric(): value = float(value)
-            header_dict.update({tag_substitutions[line[0]]: value})
+            sct_tag = tag_substitutions[line[0]]
+            
+            value_line = raw_header[index + 1]
+            if len(value_line) < 1: continue
+            if len(value_line) == 1: value_line = value_line[0]
+            
+            value_line_as_floats = extract_numbers(value_line, nest = False, return_string_if_fails = True)            
+            if len(value_line_as_floats) == 1: value_line_as_floats = value_line_as_floats[0]
 
-    return header_dict
-
-def read_header_full(self, file_path: str) -> tuple[np.ndarray, dict]:
-    try:
-        (header_array, sct_dict) = self.read_header(file_path)
-        [pixels, lines] = [int(sct_dict.get("grid_size", [1, 1])[i]) for i in range(2)]
-        sct_dict.update({"pixels": pixels, "lines": lines})
-        
-        frame = self.parent.convert_to_sct_frame(sct_dict)
-        sct_dict.update({"frame": frame})
-    except Exception as e:
-        print(f"Problem reading the SXM file header: {e}")
+            processed_value_line = []
+            match sct_tag:
+                case "Nanonis_version": processed_value_line.append(value_line_as_floats)
+                case "data_type": processed_value_line.append([value.lower() for value in value_line])
+                case "temperature": processed_value_line.append(value_line_as_floats)
+                case "creation_date": processed_value_line.append("/".join(value_line.split(".")))
+                case "scan_duration (s)": processed_value_line.append(value_line_as_floats)
+                case "domain (nm)":
+                    assert isinstance(value_line_as_floats, list)
+                    processed_value_line.append([1E9 * dim for dim in value_line_as_floats])
+                case "offset (nm)":
+                    assert isinstance(value_line_as_floats, list)
+                    processed_value_line.append([1E9 * dim for dim in value_line_as_floats])
+                case "shape": processed_value_line.append([int(value) for value in value_line_as_floats])
+                case "angle (deg)": processed_value_line.append(value_line_as_floats)
+                case "scan_up": processed_value_line.append(bool(value_line_as_floats == "up"))
+                case "V (V)": processed_value_line.append(value_line_as_floats)
+                case "z_controller":
+                    value_line2 = extract_numbers(raw_header[index + 2], return_string_if_fails = True)
+                    if not isinstance(value_line2, list) or len(value_line2) < 1: continue
+                    header_dict.update({sct_tag: [value_line, value_line2]})
+                    continue
+                case "data":
+                    description_line = [entry.lower() for entry in value_line]
+                    
+                    for channel_index in range(100):
+                        value_line = raw_header[index + 2 + channel_index]
+                        if len(value_line) < 1: break
+                        value_line = extract_numbers(value_line, nest = False, return_string_if_fails = True)
+                        processed_value_line.append({description_line[entry]: value_line[entry] for entry in range(min(len(description_line), len(value_line)))})
+                        
+                case _: processed_value_line.append(value_line)
+            
+            if len(processed_value_line) == 1: header_dict.update({sct_tag: processed_value_line[0]})
+            elif len(processed_value_line) > 1: header_dict.update({sct_tag: processed_value_line})
     
-    # Z_controller
-    try:
-        z_controller_index = np.where(header_array == ":Z-CONTROLLER:\n")[0][0]
-        z_controller_data = header_array[z_controller_index + 2].split("\t")
-        [_, z_controller_name, feedback, setpoint, p_gain, i_gain, t_const] = z_controller_data
-        sct_dict.update({"z_controller": {"name": z_controller_name, "feedback": bool(feedback), "setpoint": setpoint, "p_gain": p_gain, "i_gain": i_gain, "t_const": t_const}})
-    except Exception as e:
-        print(f"Problem retrieving z-controller data from .sxm file: {e}")
+    return header_dict, end_tag_position
 
-    # Channels
-    try:
-        channel_data_index = np.where(header_array == ":DATA_INFO:\n")[0][0]
-        channel_names = []
-        for channel_index in range(100):
-            channel_data = header_array[channel_data_index + 2 + channel_index].split()
-            if len(channel_data) < 1: break
-            [channel_index, quantity, unit, direction, calibration, offset] = channel_data
-            channel_names.append(" ".join((quantity, f"({unit})")))
+def get_file(file_path: str = "", header_end_tag: str = ":SCANIT_END:") -> Datacollection:
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["sxm"], io = "load")
+    if not os.path.isfile(file_path): raise Exception("Invalid file selected.")
+    
+    header_dict, end_tag_position = get_header(file_path, end_tag = header_end_tag)
+    domain = header_dict.pop("domain (nm)", [])
+    offset = header_dict.pop("offset (nm)", [0, 0])
+    angle = header_dict.pop("angle (deg)", 0.)
+    
+    data_info: list[dict] = header_dict.pop("data", [])
+    array_shape: list[int] = header_dict.pop("shape", [])    
+    n_bytes: int = int(4 * np.prod(array_shape))
+    dt = np.dtype(">f4")
+    
+    channel_list: list[Dataset] = []
+    
+    # Extract Datasets
+    with open(file_path, mode = "rb") as file:
+        file.seek(end_tag_position + 4)
         
-        sct_dict.update({"channels": channel_names})
-    except Exception as e:
-        print(f"Problem retrieving channel data from .sxm file: {e}")
-    return (header_array, sct_dict)
+        for channel in data_info:
+            name = channel.pop("name", "").lower()
+            units = channel.pop("unit", "")
+            direction = channel.pop("direction", "")
+            channel_index = int(channel.pop("channel", 0))
+            
+            dset_attrs = channel.copy()
+            dset_attrs.update({"channel_index": channel_index})
+            
+            multiplication_factor = 1
+            if units == "m":
+                units = "nm"
+                multiplication_factor = 1E9
+            if units == "A":
+                units = "pA"
+                multiplication_factor = 1E12
+            
+            raw_bytes = file.read(n_bytes)
+            array = np.astype(np.flipud(np.frombuffer(raw_bytes, dtype = dt).reshape(array_shape).copy() * multiplication_factor), np.float32)
+            
+            if direction == "both":
+                channel_list.append(Dataset(name = f"{name} [fwd]", units = units, data = array, attrs = channel))
+                
+                raw_bytes = file.read(n_bytes)
+                array = np.astype(np.flipud(np.fliplr(np.frombuffer(raw_bytes, dtype = dt).reshape(array_shape).copy()) * multiplication_factor), np.float32)
+                
+                channel_list.append(Dataset(name = f"{name} [bwd]", units = units, data = array, attrs = channel))
+            else:
+                channel_list.append(Dataset(name = name, units = units, data = array, attrs = channel))
+
+
+
+    # To Datagrids
+    try: frame = CoordinateFrame(x_range = domain[0], y_range = domain[1], units = "nm", anchor = [.5, .5], angle_units = "degree", offset = offset, angles = [angle, 0.])
+    except Exception as e: raise Exception(f"Failed to create CoordinateFrame object: {e}")
+    
+    data_grids = [Datagrid.from_frame(dataset, frame, axes_names = ["x", "y"], include_boundaries = False) for dataset in channel_list]
+
+
+
+    # To Datacollection
+    file_name = os.path.basename(header_dict.pop("file_path", ""))
+    date = header_dict.pop("creation_date", "")
+    time = header_dict.pop("creation_time", "")
+
+    dc = Datacollection(name = file_name, creator = "Nanonis", date = date, time = time, attrs = header_dict, data_grids = data_grids)
+    return dc
+
+def convert_to_h5(file_path: str = "", output_path: str = "", existsok = False) -> None:
+    if not file_path: file_path = get_file_path_from_dialog(extensions = ["sxm"])
+    dc = get_file(file_path)
+    
+    if not output_path:
+        folder = os.path.dirname(file_path)
+        file_basename = os.path.splitext(os.path.basename(file_path))[0]
+        output_path = os.path.join(folder, file_basename) + ".h5"
+    
+    with File(output_path, mode = "w", existsok = existsok) as root: root.create_datacollection(dc)
+    return
 
 
 
 # Misc
-def split_physical_quantity(self, text: str) -> tuple:
+def split_physical_quantity(text: str) -> tuple:
     error = False
     quantity = None
     unit = None
@@ -186,13 +281,40 @@ def convert_data_to_unit(data: np.ndarray, quantity: str, target_unit: str | Non
         print(f"Error encountered while trying to convert data ({quantity}) to unit {target_unit}: {e}")
     return output_quantity
 
-def get_scientific_numbers(text: str) -> list:
+def extract_numbers(text: str | list[str], nest: bool = False, return_string_if_fails: bool = False, reduce_to_integers: bool = False) -> list | str:
     pattern = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
-    matches = re.findall(pattern, text)
-    numbers = [float(x) for x in matches]
-    return numbers
+    
+    if isinstance(text, str):
+        matches = re.findall(pattern, text)
+        if len(matches) < 1:
+            if return_string_if_fails: return text
+            else: return []
+        numbers = [float(x) for x in matches]
+        if reduce_to_integers: numbers = [int(number) for number in numbers if number.is_integer()]
+        return numbers
 
-def get_next_indexed_filename(folder_path, base_name, extension) -> str:
+    return_list = []
+    for entry in text:
+        if not isinstance(entry, str): continue
+        
+        matches = re.findall(pattern, entry)
+        if len(matches) < 1:
+            if return_string_if_fails: return_list.append(entry)
+            else: return_list.append([])
+        else:
+            numbers = [float(x) for x in matches]
+            if reduce_to_integers: numbers = [int(number) for number in numbers if number.is_integer()]
+            return_list.append(numbers)
+
+    def flatten_shallow(iterable: list | tuple):
+        for item in iterable:
+            if isinstance(item, list | tuple): yield from item
+            else: yield item
+
+    if not nest: return_list = list(flatten_shallow(return_list))
+    return return_list
+
+def get_next_indexed_filename(folder_path, base_name, extension) -> list[str, str]:
     # Pattern to match files with the base name and exactly 3 digits for the index
     # \d{3} matches exactly three digits
     pattern = rf"^{re.escape(base_name)}_(\d{{3}}){re.escape(extension)}$"
@@ -259,3 +381,4 @@ def trace_attributes(obj: object, object_name: str = "", visited = None, depth: 
         else:
             attributes.append(full_path)
     return attributes
+
