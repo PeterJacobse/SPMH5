@@ -97,7 +97,8 @@ def get_file(file_path: str = "", header_end_tag: str = ":SCANIT_END:") -> Datac
     offset = header_dict.pop("offset (nm)", [0, 0])
     angle = header_dict.pop("angle (deg)", 0.)
     
-    data_info: list[dict] = header_dict.pop("data", [])
+    data_info: dict | list[dict] = header_dict.pop("data", [])
+    if isinstance(data_info, dict): data_info = [data_info]
     array_shape: list[int] = header_dict.pop("shape", [])    
     n_bytes: int = int(4 * np.prod(array_shape))
     dt = np.dtype(">f4")
