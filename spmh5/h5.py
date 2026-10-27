@@ -50,13 +50,13 @@ class File(h5py.File):
         if not isinstance(h5object, File | h5py.File | h5py.Group | h5py.Dataset): return get_attributes(self)
         else: return get_attributes(h5object)
 
-    def get_groups(self, root_or_group: File | h5py.File | h5py.Group | None = None) -> dict[str, object]:
+    def get_groups(self, root_or_group: File | h5py.File | h5py.Group | None = None) -> dict[str, h5py.Group]:
         if not isinstance(root_or_group, File | h5py.File | h5py.Group): return get_groups(self)
         else: return get_groups(root_or_group)
 
-    def get_datasets(self, root_or_group: File | h5py.File | h5py.Group | None = None) -> dict[str, object]:
+    def get_datasets(self, root_or_group: File | h5py.File | h5py.Group | None = None) -> dict[str, h5py.Dataset]:
         if not isinstance(root_or_group, File | h5py.File | h5py.Group): return get_datasets(self)
-        else: return get_groups(root_or_group)
+        else: return get_datasets(root_or_group)
 
     def get_items(self, root_or_group: File | h5py.File | h5py.Group | None = None) -> dict[str, object]:
         if not isinstance(root_or_group, File | h5py.File | h5py.Group): return get_items(self)
@@ -234,7 +234,7 @@ class File(h5py.File):
     def get_thumbnail(self) -> np.ndarray:
         return get_thumbnail(self)
 
-    def show_thumbnail(self) -> PILImage:
+    def show_thumbnail(self) -> PILImage.Image:
         return show_thumbnail(self)
 
 
@@ -527,10 +527,10 @@ def get_attributes(h5object: File | h5py.File | h5py.Group | h5py.Dataset, clean
     if clean: return clean_attributes(parsed_attributes)
     else: return parsed_attributes
 
-def get_groups(root_or_group: File | h5py.File | h5py.Group) -> dict[str, object]:
+def get_groups(root_or_group: File | h5py.File | h5py.Group) -> dict[str, h5py.Group]:
     return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Group)}
 
-def get_datasets(root_or_group: File | h5py.File | h5py.Group) -> dict[str, object]:
+def get_datasets(root_or_group: File | h5py.File | h5py.Group) -> dict[str, h5py.Dataset]:
     return {key: value for key, value in root_or_group.items() if isinstance(value, h5py.Dataset)}
 
 def get_items(root_or_group: File | h5py.File | h5py.Group) -> dict[str, object]:
@@ -553,7 +553,8 @@ def get_root(h5object: File | h5py.Group | h5py.Dataset | h5py.File) -> h5py.Gro
 def get_NeXus_tag(h5object: File | h5py.File | h5py.Group | h5py.Dataset) -> str:
     attrs = get_attributes(h5object)
     tag = attrs.get("NX_class", "")
-    return tag
+    if isinstance(tag, str): return tag
+    else: return ""
 
 
 
@@ -602,9 +603,9 @@ def set_NSID_tag(h5object: File | h5py.File | h5py.Group | h5py.Dataset | None =
     attributes = {"data_model": "NSID", "version": nsid_version, "nsid_version": nsid_version}
     if nsid_version and isinstance(h5object, h5py.File | h5py.Group | h5py.Dataset):
         attributes = get_attributes(h5object)
-        if "creator" in attributes.keys() and not overwrite: return attributes
+        if "creator" in attributes.keys() and not overwrite: return attributes # type: ignore
         else: create_attributes(h5object, attributes)
-    return attributes
+    return attributes # type: ignore
 
 def set_NeXus_tag(h5object: File | h5py.File | h5py.Group | h5py.Dataset | None = None, NeXus_class: str = "", overwrite: bool = False) -> dict[str, str]:    
     if not NeXus_class: return {}
@@ -613,9 +614,9 @@ def set_NeXus_tag(h5object: File | h5py.File | h5py.Group | h5py.Dataset | None 
     NXattribute = {"NX_class": NeXus_class}
     if isinstance(h5object, h5py.File | h5py.Group | h5py.Dataset):
         attributes = get_attributes(h5object)
-        if "NX_class" in attributes.keys() and not overwrite: return attributes
+        if "NX_class" in attributes.keys() and not overwrite: return attributes # type: ignore
         else: create_attributes(h5object, NXattribute)
-    return attributes
+    return attributes # type: ignore
 
 
 
@@ -648,8 +649,9 @@ def get_entry_group(root: File | h5py.File, name: str = "Measurement_000", verbo
             entry_group_name = root_attributes["default"]
             
             if verbose: print(f"Entry group {entry_group_name} was found from the 'default' tag at the root.")
-            if entry_group_name in root_groups.keys(): # Case 1: The default attribute in the root points to a valid entry group
+            if entry_group_name in root_groups.keys() and isinstance(entry_group_name, str): # Case 1: The default attribute in the root points to a valid entry group
                 entry_group = root_groups[entry_group_name]
+                assert isinstance(entry_group, h5py.Group)
                 if verbose: print(f"Entry group is valid ({entry_group = }).")
                 set_NeXus_tag(entry_group, "entry")
                 return entry_group
@@ -775,7 +777,7 @@ def append_values(dataset: h5py.Dataset, values: float | int | list | np.ndarray
             case _: raise Exception(f"Unsupported axis {axis}")
         
         dset_attrs = get_attributes(dataset)
-        if dset_attrs.get("NX_class") == "NXaxis": update_axis(dataset)
+        if dset_attrs.get("NX_class") == "NXaxis": update_axis(dataset) # Update axis updates the X Range, X No, etc. attributes on the main dataset parent group to make it satisfy the new axis data
         
     except Exception as e:
         try:
@@ -784,7 +786,7 @@ def append_values(dataset: h5py.Dataset, values: float | int | list | np.ndarray
             raise Exception(f"Failed to add a data chunk {values} to dataset {dataset} along axis {axis}: {e}")
     return
 
-def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, name: str = "", units: str = "", existsok: bool = True, modality: str = "SPM", make_default: bool = True, attributes: dict = {},
+def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, name: str = "", units: str = "", existsok: bool = True, modality: str = "SPM", make_default: bool = True, attributes: dict = {}, parent_group_attributes: dict = {},
                         data: np.ndarray | None = None, dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, resizable_axes: int | np.integer | tuple[int] | list[int] | None = None,
                         maxshape: tuple | int | None = None, image_version: str = "1.2", gwyddion_class: str = "IMAGE", NeXus_compliant: bool = True, nsid_compliant: bool = True,
                         default_slice_axes: int | tuple[int] | list[int] | None = None, default_slice_indices: int | tuple[int] | list[int] | None = None, verbose: bool = False) -> h5py.Dataset:
@@ -811,13 +813,16 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
     """
     try:
         # Find or create the entry group
+        attrs = attributes.copy()
+        parent_attrs = parent_group_attributes.copy()
+        
         entry_group = get_entry_group(root, name = "Measurement_000", verbose = verbose)
         entry_subgroups = get_groups(entry_group)
         
         # If an SPMH5 Dataset is provided explicitly, use the values attached to it to create the h5py dataset
         if isinstance(dataset, Dataset):
             name = dataset.name
-            data = dataset.data
+            data = dataset.data.copy()
             shape = dataset.shape
             units = dataset.units
             ds_attrs = dataset.attributes
@@ -828,7 +833,7 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
             default_slice_axes = dataset.slice_axes
             default_slice_indices = dataset.slice_indices
             
-            attributes.update(ds_attrs)
+            attrs.update(ds_attrs)
         
         if name in entry_subgroups.keys():
             if existsok:
@@ -838,7 +843,7 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
             else:
                 raise Exception(f"Error: A dataset with the same name ({name}) was already found in this HDF5 file. Aborting.")
         else:
-            data_group_attrs = {"signal": name, "units": units}
+            data_group_attrs = {"signal": name, "units": units} | parent_attrs
             data_group = create_group(entry_group, name, attributes = data_group_attrs)
             if NeXus_compliant: set_NeXus_tag(data_group, "data")
         
@@ -853,7 +858,7 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
         # Create the dataset attributes
         root_attrs = get_attributes(root)
         nsid_version = root_attrs.get("nsid_version", "0.0.4")
-        dset_attributes = {"units": units, "data_type": data_type, "modality": modality} | attributes
+        dset_attributes = {"units": units, "data_type": data_type, "modality": modality} | attrs
         if nsid_compliant: dset_attributes.update({"CLASS": gwyddion_class, "IMAGE_VERSION": image_version, "nsid_version": nsid_version})
         
         
@@ -910,10 +915,11 @@ def set_default(main_dataset: h5py.Dataset) -> None:
 
 def set_default_slice(main_dataset: h5py.Dataset, axes: int | tuple[int] | list[int] | None = None, indices: int | tuple[int] | list[int] | None = None) -> None:
     measurement_group = main_dataset.parent
+    assert isinstance(measurement_group, h5py.Group)
     rank = main_dataset.ndim
     
-    if not axes: axes = tuple([index for index in range(rank - 2)])
-    if not indices: indices = tuple([0 for _ in range(rank - 2)])
+    if not axes: axes = [index for index in range(rank - 2)]
+    if not indices: indices = [0 for _ in range(rank - 2)]
     
     if isinstance(axes, int): axes = [axes]
     if isinstance(indices, int): indices = [indices]
@@ -976,6 +982,8 @@ def create_ancillary_dataset(root: File | h5py.File, dataset: Dataset | None = N
     """
     try:
         # Find or create the entry group
+        attrs = attributes.copy()
+        
         entry_group = get_entry_group(root, name = "Measurement_000", verbose = verbose)
         entry_subgroups = get_groups(entry_group)
         
@@ -988,8 +996,7 @@ def create_ancillary_dataset(root: File | h5py.File, dataset: Dataset | None = N
             ds_attrs = dataset.attributes
             dtype = dataset.dtype
             
-            attributes.update(ds_attrs)
-            print(f"Local dataset passed with name {name} and units {units} to create an ancillary dataset")
+            attrs.update(ds_attrs)
         
         # Find or create the Ancillary group (The group that stores the axes)
         if "Ancillary" in entry_subgroups.keys():
@@ -1015,10 +1022,10 @@ def create_ancillary_dataset(root: File | h5py.File, dataset: Dataset | None = N
 
         # Create the dataset
         if isinstance(data, np.ndarray):
-            dataset_out = create_dataset(ancillary_group, name, data = data, maxshape = (None,), dtype = dtype, units = units, attributes = attributes)
+            dataset_out = create_dataset(ancillary_group, name, data = data, maxshape = (None,), dtype = dtype, units = units, attributes = attrs)
             set_NeXus_tag(dataset_out, "axis")
         elif isinstance(shape, tuple):
-            dataset_out = create_dataset(ancillary_group, name, shape = shape, maxshape = (None,), dtype = dtype, units = units, attributes = attributes)
+            dataset_out = create_dataset(ancillary_group, name, shape = shape, maxshape = (None,), dtype = dtype, units = units, attributes = attrs)
             set_NeXus_tag(dataset_out, "axis")
         else: raise Exception("Neither data nor shape were provided when attempting to create a dataset")
         
@@ -1034,7 +1041,7 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         main_dataset_group = main_dataset.parent
         assert isinstance(main_dataset_path, str) and isinstance(main_dataset_group, h5py.Group | h5py.File)
         main_dataset_name = os.path.basename(main_dataset_path)
-        main_dataset_group_attrs = get_attributes(main_dataset_group)
+        main_dataset_group_attrs = get_attributes(main_dataset_group, clean = True)
         main_dataset_rank = main_dataset.ndim
         
         # Extract all the information from the axis dataset and its parent group
@@ -1046,7 +1053,7 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         
         axis_units = axis_attrs.get("units", "none")
         axis_dtype = ancillary_dataset.dtype
-        axis_data = ancillary_dataset[:]
+        axis_data = ancillary_dataset[:].copy()
         axis_dpoints = len(axis_data)
         axis_is_strings = (axis_dtype.kind in ('O', 'S', 'U')) or (h5py.check_string_dtype(axis_dtype) is not None)
 
@@ -1060,14 +1067,13 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         
         # Attach it directly for NSID compliance
         try:
-            raise Exception("buad")
             if not local_axis_ds.is_scale: local_axis_ds.make_scale(axis_name) # h5py's make_scale automatically creates attributes 'CLASS' and 'NAME'
             main_dataset.dims[axis].attach_scale(local_axis_ds) # h5py's attach_scale automatically creates attributes 'REFERENCE_LIST' and 'DIMENSION_LIST'
             main_dataset.file.flush()
         except Exception as e:
-            print("Error encountered while attempting to attach the axis dataset using \"make_scale\" and \"attach_scale\".")
+            print("Error encountered while attempting to attach the axis dataset using \"make_scale\" and \"attach_scale\". The axis is still attached through group metadata.")
         
-        print(f"Attaching axis {ancillary_dataset} with attributes {axis_attrs}, units {axis_units} to axis {axis} of {main_dataset}")
+        #print(f"Attaching axis {ancillary_dataset} with attributes {axis_attrs}, units {axis_units} to axis {axis} of {main_dataset}")
         
         # Find the declared axes (NeXus) attribute in the main dataset group and update it with the name of the axis dataset
         main_dataset_axes = main_dataset_group_attrs.get("axes", None)
@@ -1091,10 +1097,7 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         
         create_attributes(main_dataset_group, range_units_attrs | {f"{axis_name}_indices": axis, "axes": main_dataset_axes}) # Add NeXus attributes
         create_attributes(ancillary_dataset, {"axis": axis, "main_dataset_path": main_dataset_path, "units": axis_units, "shape": [axis_dpoints]})
-        
-        new_attrs = get_attributes(ancillary_dataset)
-        print(f"Ancillary dataset {ancillary_dataset} now has updated attributes {new_attrs}")
-        
+                
     except Exception as e:
         try:
             print(f"Failed to attach dataset {axis_name} to axis {axis} of {main_dataset_name}: {e}")
@@ -1145,7 +1148,7 @@ def update_axis(ancillary_dataset: h5py.Dataset) -> None:
         else: axis_range = np.array([axis_data[0], axis_data[1]], dtype = axis_dtype)
         
         main_dataset_path = axis_attrs.get("main_dataset_path", "")
-        axis_of_main_dataset = int(axis_attrs.get("axis", 0))
+        axis_of_main_dataset = int(axis_attrs.get("axis", 0)) # type: ignore
         
         if main_dataset_path:
             main_dataset = root[main_dataset_path]
@@ -1177,7 +1180,9 @@ def generate_thumbnail(root: File | h5py.File, main_dataset: h5py.Dataset | None
         if not isinstance(main_ds_group, h5py.Group): raise Exception("Could not find the default dataset in this file. Please earmark it using \"set_default(dataset)\".")
         mdg_attrs = get_attributes(main_ds_group)
         main_ds_name = mdg_attrs.get("signal", "")
-        main_dataset = main_ds_group[main_ds_name]
+        if not isinstance(main_ds_name, str): raise Exception("\"signal\" attribute does not point to a valid dataset.")
+        found_dataset = main_ds_group[main_ds_name]
+        if isinstance(found_dataset, h5py.Dataset): main_dataset = found_dataset
     
     if not isinstance(main_dataset, h5py.Dataset): raise Exception("No dataset to extract a thumbnail from.")
     main_ds_data = main_dataset[:]    
@@ -1196,13 +1201,13 @@ def generate_thumbnail(root: File | h5py.File, main_dataset: h5py.Dataset | None
 
             if not isinstance(axes, list | np.ndarray | tuple) or not len(axes) == main_ds_rank - 2:
                 if not isinstance(ds_axes, list | np.ndarray | tuple): raise Exception("Invalid slice axes for this dataset")
-                else: axes = ds_axes
+                else: axes = ds_axes # type: ignore
             if not isinstance(indices, list | np.ndarray | tuple) or not len(indices) == main_ds_rank - 2:
                 if not isinstance(ds_indices, list | np.ndarray | tuple): raise Exception("Invalid slice axes for this dataset")
-                else: indices = ds_indices
+                else: indices = ds_indices # type: ignore
             
             slice_list = [slice(None) for _ in range(main_ds_rank)]
-            for axis, index in zip(axes, indices):
+            for axis, index in zip(axes, indices): # type: ignore
                 slice_list[axis] = index
             sliced_data = main_ds_data[tuple(slice_list)]
         case _:
@@ -1215,6 +1220,7 @@ def generate_thumbnail(root: File | h5py.File, main_dataset: h5py.Dataset | None
     scale = thumbnail_size / max(array.shape)
     if array.ndim == 3: slice_resized = zoom(array, (scale, scale, 1), order = 1)
     else: slice_resized = zoom(array, (scale, scale), order = 1)
+    assert isinstance(slice_resized, np.ndarray)
     [min_val, max_val] = [slice_resized.min(), slice_resized.max()]
 
     if not max_val > min_val: return np.zeros(slice_resized.shape, dtype = np.uint8)
@@ -1228,12 +1234,13 @@ def set_thumbnail(root: File | h5py.File, main_dataset: h5py.Dataset | None = No
     existing_groups = get_groups(root)
     if "thumbnail" in existing_groups.keys(): thumbnail_group = root["thumbnail"]
     else: thumbnail_group = create_group(root, "thumbnail")
-    
+    assert isinstance(thumbnail_group, h5py.Group)
     set_NeXus_tag(thumbnail_group, "data")
     
     thumbnail_datasets = get_datasets(thumbnail_group)
-    if "thumbnail" in thumbnail_datasets.keys():
+    if "thumbnail" in thumbnail_datasets.keys() and isinstance(thumbnail_group["thumbnail"], h5py.Dataset):
         thumbnail_ds = thumbnail_group["thumbnail"]
+        assert isinstance(thumbnail_ds, h5py.Dataset)
         thumbnail_ds.resize(thumbnail.shape)
         thumbnail_ds[:] = thumbnail
     else: thumbnail_ds = create_dataset(thumbnail_group, name = "thumbnail", units = "none", data = thumbnail, resizable_axes = [0, 1, 2])
@@ -1253,11 +1260,12 @@ def get_thumbnail(root: File | h5py.File) -> np.ndarray:
     groups = get_groups(root)
     try:
         thumbnail = root["thumbnail/thumbnail"]
+        assert isinstance(thumbnail, h5py.Dataset)
+        return thumbnail[:]
     except:
         raise Exception(f"Unable to extract thumbnail from file")
-    return thumbnail[:]
 
-def show_thumbnail(root: File | h5py.File) -> PILImage:
+def show_thumbnail(root: File | h5py.File) -> PILImage.Image:
     thumbnail = get_thumbnail(root)
     return PILImage.fromarray(thumbnail)
 
@@ -1408,7 +1416,7 @@ class Datacollection:
     def __len__(self) -> int:
         return len(self.data_grids)
 
-    def info(self) -> None:
+    def info(self) -> PILImage.Image:
         print(f"SPMH5 Datacollection \"{self.name}\" created by {self.creator} on {self.date} at {self.time}, containing {len(self.data_grids)} data grids.\n\n")
         if len(self.data_grids) > 0:
             print("Data grids (self.data_grids):\n")
@@ -1428,7 +1436,7 @@ class Datacollection:
         if len(self.other_datasets) > 0:
             print(f"Other datasets (self.other_datasets):\n")
             print_dict(self.other_datasets)
-        return self.show_thumbnail()
+        return self.show_thumbnail() # type: ignore
 
     @classmethod
     def from_file(cls, file_path: str = ""):
@@ -1438,14 +1446,14 @@ class Datacollection:
             root_group = groups.get("./", {})
             if not isinstance(root_group, dict): raise Exception(f"Invalid root group type {type(root_group)}. Expected a dict")
             
-            default = ""
             root_attrs = get_attributes(root)
             assert isinstance(root_attrs, dict)
             [filename, creator, file_time, file_date, default] = [root_attrs.get(key, "unknown") for key in ["filename", "creator", "creation_time", "creation_date", "default"]]
+            assert isinstance(filename, str) and isinstance(creator, str) and isinstance(file_time, str) and isinstance(file_date, str) and isinstance(default, str)
             if not filename: filename = os.path.basename(file_path)
             
             entry_group = {}
-            if default != "unknown":
+            if not default == "unknown":
                 entry_group = groups[default]
             else:
                 for group_path, group_info in groups.items():
@@ -1467,14 +1475,14 @@ class Datacollection:
             else: thumbnail = np.zeros((12, 12, 4), dtype = np.uint8)
             
         return cls(name = filename, creator = creator, date = file_date, time = file_time, groups = groups, instruments = file_dict["instruments"], other_datasets = other_datasets,
-                   attrs = root_attrs, thumbnail = thumbnail, data_grids = data_grids, default = default)
+                   attributes = root_attrs, thumbnail = thumbnail, data_grids = data_grids, default = default)
 
     def to_file(self, file_path: str = ""):
         raise NotImplementedError()
 
 
 
-    def show_thumbnail(self) -> PILImage:
+    def show_thumbnail(self) -> PILImage.Image:
         return PILImage.fromarray(self.thumbnail)
 
 
