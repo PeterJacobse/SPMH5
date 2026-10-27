@@ -184,7 +184,7 @@ class File(h5py.File):
         return set_default_slice(main_dataset, axes, indices)
 
     def find_dataset(self, name: str = "") -> h5py.Dataset:
-        raise find_dataset(self, name)
+        return find_dataset(self, name)
 
 
 
@@ -234,6 +234,9 @@ class File(h5py.File):
     def get_thumbnail(self) -> np.ndarray:
         return get_thumbnail(self)
 
+    def show_thumbnail(self) -> PILImage:
+        return show_thumbnail(self)
+
 
 
 # Standalone functions: pass the h5 object or file root as an argument when using these
@@ -269,7 +272,7 @@ def parse_datasets_from_group(group: h5py.Group, axis_dataset_names: dict[str, s
         axis_path = axis_dataset_names.get(axis_name, axis_name)
         axes[axis_index] = axis_path
     
-    # Convert the NSID default_slice attribute to slice_axes and slice_indices.
+    # Convert the NSID default_slice attribute to slice_axes and slice_indices.    
     default_slice = list(group_attrs.get("default_slice", []))
     slice_axes = []
     slice_indices = []
@@ -287,6 +290,9 @@ def parse_datasets_from_group(group: h5py.Group, axis_dataset_names: dict[str, s
         shape = list(getattr(dataset, "shape", []))                      
         units = dset_attrs.pop("units", "")
         dset_path = group_path + "/" + dataset_name
+        
+        if shape and len(slice_axes) < len(shape) - 2: slice_axes = [index for index in range(len(shape) - 2)]
+        if shape and len(slice_indices) < len(shape) - 2: slice_indices = [0 for _ in range(len(shape) - 2)]
         
         parsed_datasets.update({dset_path: {"path": dset_path, "name": dataset_name, "parent_group": group_path, "object_type": "main dataset", "axes": axes, "units": units, "attrs": dset_attrs,
                                             "shape": shape, "slice_indices": slice_indices, "slice_axes": slice_axes}})
@@ -491,7 +497,7 @@ def get_data_grids(root: File | h5py.File) -> tuple[dict[str, dict[str, dict[str
             parent_group_attrs = {}
         else:
             parent_group = groups[parent_group_path]
-            parent_group_attrs = parent_group.get("attrs", {})
+            parent_group_attrs = parent_group.get("attributes", {})
             assert isinstance(parent_group_attrs, dict)
         
         axes = main_dataset.get("axes", [])
@@ -814,7 +820,7 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
             data = dataset.data
             shape = dataset.shape
             units = dataset.units
-            ds_attrs = dataset.attrs
+            ds_attrs = dataset.attributes
             resizable_axes = dataset.resizable_axes
             maxshape = dataset.maxshape
             dtype = dataset.dtype
@@ -869,23 +875,26 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
         raise Exception(f"Error encountered while attempting to create a new h5py dataset called {name}: {e}")
 
 def create_datagrid(root: File | h5py.File, datagrid: Datagrid) -> tuple[h5py.Dataset, list[h5py.Dataset]]:
-    axis_datasets = []    
+    main_ds = create_main_dataset(root, dataset = datagrid.dataset, attributes = datagrid.dataset.attributes)
+    axis_datasets = []
     
-    main_ds = create_main_dataset(root, dataset = datagrid.dataset)
-    for axis_index, axis_ds in enumerate(datagrid.axes):
+    for axis_ds in datagrid.axes:
         axis_ds_out = create_ancillary_dataset(root, dataset = axis_ds)
-        attach_axis(main_ds, axis_ds_out, axis_index)
         axis_datasets.append(axis_ds_out)
     
-    entry_group = get_entry_group(root)
-    create_attributes(entry_group, datagrid.attrs)
+    for axis_index, axis_ds_out in enumerate(axis_datasets):
+        attach_axis(main_ds, axis_ds_out, axis_index)
+    
+    measurement_group = main_ds.parent
+    assert isinstance(measurement_group, h5py.Group)
+    create_attributes(measurement_group, datagrid.attributes | {"anchor": datagrid.anchor, "angles": datagrid.angles, "angle_units": datagrid.angle_units, "offset": datagrid.offset})
     return main_ds, axis_datasets
 
 def create_datacollection(root: File | h5py.File, data_collection: Datacollection) -> None:
     for data_grid in data_collection.data_grids:
         create_datagrid(root, data_grid)
     
-    create_attributes(root, data_collection.attrs)
+    create_attributes(root, data_collection.attributes)
     
     for instrument in data_collection.instruments:
         instr_name = instrument.get("name")
@@ -976,10 +985,11 @@ def create_ancillary_dataset(root: File | h5py.File, dataset: Dataset | None = N
             data = dataset.data
             shape = dataset.shape
             units = dataset.units
-            ds_attrs = dataset.attrs
+            ds_attrs = dataset.attributes
             dtype = dataset.dtype
             
             attributes.update(ds_attrs)
+            print(f"Local dataset passed with name {name} and units {units} to create an ancillary dataset")
         
         # Find or create the Ancillary group (The group that stores the axes)
         if "Ancillary" in entry_subgroups.keys():
@@ -1050,11 +1060,14 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
         
         # Attach it directly for NSID compliance
         try:
+            raise Exception("buad")
             if not local_axis_ds.is_scale: local_axis_ds.make_scale(axis_name) # h5py's make_scale automatically creates attributes 'CLASS' and 'NAME'
             main_dataset.dims[axis].attach_scale(local_axis_ds) # h5py's attach_scale automatically creates attributes 'REFERENCE_LIST' and 'DIMENSION_LIST'
             main_dataset.file.flush()
         except Exception as e:
-            print("Error encountered while attempting to attach the axis dataset using \"make_scale\" and \"attach_scale\". I will still attach it using NeXus tags.")
+            print("Error encountered while attempting to attach the axis dataset using \"make_scale\" and \"attach_scale\".")
+        
+        print(f"Attaching axis {ancillary_dataset} with attributes {axis_attrs}, units {axis_units} to axis {axis} of {main_dataset}")
         
         # Find the declared axes (NeXus) attribute in the main dataset group and update it with the name of the axis dataset
         main_dataset_axes = main_dataset_group_attrs.get("axes", None)
@@ -1077,7 +1090,10 @@ def attach_axis(main_dataset: h5py.Dataset, ancillary_dataset: h5py.Dataset, axi
             case _: range_units_attrs = {"A Range": axis_range, "A Units": axis_units, "A No": axis_dpoints}
         
         create_attributes(main_dataset_group, range_units_attrs | {f"{axis_name}_indices": axis, "axes": main_dataset_axes}) # Add NeXus attributes
-        create_attributes(ancillary_dataset, {"axis": axis, "main_dataset_path": main_dataset_path})
+        create_attributes(ancillary_dataset, {"axis": axis, "main_dataset_path": main_dataset_path, "units": axis_units, "shape": [axis_dpoints]})
+        
+        new_attrs = get_attributes(ancillary_dataset)
+        print(f"Ancillary dataset {ancillary_dataset} now has updated attributes {new_attrs}")
         
     except Exception as e:
         try:
@@ -1241,6 +1257,10 @@ def get_thumbnail(root: File | h5py.File) -> np.ndarray:
         raise Exception(f"Unable to extract thumbnail from file")
     return thumbnail[:]
 
+def show_thumbnail(root: File | h5py.File) -> PILImage:
+    thumbnail = get_thumbnail(root)
+    return PILImage.fromarray(thumbnail)
+
 
 
 # Misc
@@ -1359,8 +1379,8 @@ class IndentDumper(yaml.Dumper):
 class Datacollection:
     """Class containing a collection of datagrids, instruments, and other file data
     """
-    def __init__(self, name: str = "unknown", creator: str = "unknown", date: str = "unknown", time: str = "unknown", thumbnail: np.ndarray = np.zeros((12, 12, 3), dtype = np.uint8),
-                 groups: dict = {}, instruments: dict = {}, other_datasets: dict = {}, attrs: dict = {}, data_grids: list[Datagrid] = [], default: str | Datagrid = ""):
+    def __init__(self, name: str = "unknown", creator: str = "unknown", date: str = "unknown", time: str = "unknown", thumbnail: np.ndarray = np.zeros((0, 0, 3), dtype = np.uint8),
+                 groups: dict = {}, instruments: dict = {}, other_datasets: dict = {}, attributes: dict = {}, data_grids: list[Datagrid] = [], default: str | Datagrid = ""):
         self.name = name
         self.creator = creator
         self.date = date
@@ -1368,7 +1388,7 @@ class Datacollection:
         self.groups = groups
         self.instruments = instruments
         self.other_datasets = other_datasets
-        self.attrs = attrs
+        self.attributes = attributes
         self.data_grids = data_grids
         self.default = default
         self.thumbnail = thumbnail
@@ -1402,13 +1422,13 @@ class Datacollection:
         if len(self.groups) > 0:
             print(f"Groups (self.groups):\n")
             print_dict(self.groups)
-        if len(self.attrs) > 0:
-            print(f"File attributes (self.attrs):\n")
-            print_dict(self.attrs)
+        if len(self.attributes) > 0:
+            print(f"File attributes (self.attributes):\n")
+            print_dict(self.attributes)
         if len(self.other_datasets) > 0:
             print(f"Other datasets (self.other_datasets):\n")
             print_dict(self.other_datasets)
-        return
+        return self.show_thumbnail()
 
     @classmethod
     def from_file(cls, file_path: str = ""):
@@ -1452,5 +1472,9 @@ class Datacollection:
     def to_file(self, file_path: str = ""):
         raise NotImplementedError()
 
+
+
+    def show_thumbnail(self) -> PILImage:
+        return PILImage.fromarray(self.thumbnail)
 
 

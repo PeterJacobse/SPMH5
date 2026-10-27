@@ -101,7 +101,7 @@ def represent_as_cube(array: np.ndarray | None = None, ranges: np.ndarray | None
 
 class CoordinateFrame:
     """Class describing a rectilinear coordinate frame with ranges in the x (and potentially y, z, a) dimensions expressed in its own coordinate system.
-    An anchor with the same dimensionality defines rotations (self.angles) and translations (self.offset) with respect to a global coordinate system this frame may be placed in. 
+    An anchor expressed in fractional coordinates (self.anchor) defines the origin of the local coordinate system around which rotations (self.angles) and translations (self.offset) are defined relative to a global coordinate system this frame may be placed in. 
     """
     def __init__(self, x_range: Numeric | NPSequence | None = None, y_range: Numeric | NPSequence | None = None,
                  z_range: Numeric | NPSequence | None = None, a_range: Numeric | NPSequence | None = None,
@@ -114,30 +114,36 @@ class CoordinateFrame:
         self.y_range = None
         self.z_range = None
         self.a_range = None
-        self.set_anchor(anchor)
         
-        if ranges: self.set_range(ranges)
-        if x_range: self.set_range(x_range, axis = 0)
-        if y_range: self.set_range(y_range, axis = 1)
-        if z_range: self.set_range(z_range, axis = 2)
-        if a_range: self.set_range(a_range, axis = 3)
+        if ranges: self.set_range(ranges, anchor = anchor)
+        if x_range: self.set_range(x_range, axis = 0, anchor = anchor)
+        if y_range: self.set_range(y_range, axis = 1, anchor = anchor)
+        if z_range: self.set_range(z_range, axis = 2, anchor = anchor)
+        if a_range: self.set_range(a_range, axis = 3, anchor = anchor)
+        
+        self.setup_transformation_attributes()
+        self.set_angle_units(angle_units)
         
         self.set_units(units)
         self.set_offset(offset)
         self.set_angle(angles)
-        self.set_angle_units(angle_units)
-    
+        self.set_anchor(anchor)
+
     def __repr__(self) -> str:
         output_str_0 = f"{self.ndim}-dimensional rectilinear frame with ranges "
         ranges_strs = ", ".join([f"[{float(axis_range[0]):.4f} {axis_dim} to {float(axis_range[1]):.4f} {axis_dim}]" for axis_range, axis_dim in zip(self.ranges, self.units)])
         return output_str_0 + ranges_strs
 
 
-    
-    def set_range(self, value: Numeric | NPSequence | NestedNPSequence, axis: int = -1) -> None:
+
+    def set_range(self, value: Numeric | NPSequence | NestedNPSequence, axis: int = -1, anchor: NPSequence | Numeric | None = None) -> None:
         """self.ranges are expressed in local coordinates (disregarding any offset)
         """
-        if isinstance(value, Numeric): value = [-value * self.anchor[axis], value * (1 - self.anchor[axis])]
+        if isinstance(value, Numeric):
+            if isinstance(anchor, Numeric): value = [-value * anchor, value * (1 - anchor)]
+            elif isinstance(anchor, list | tuple | np.ndarray) and len(anchor) > axis: value = [-value * anchor[axis], value * (1 - anchor[axis])]
+            elif hasattr(self, "nachor") and isinstance(self.anchor, list | tuple | np.ndarray) and len(self.anchor) > axis: value = [-value * self.anchor[axis], value * (1 - self.anchor[axis])]
+            else: value = [0, value]
         if isinstance(value[0], list | tuple | np.ndarray): self.ranges = list(value)
         
         if isinstance(value[0], Numeric):
@@ -156,11 +162,15 @@ class CoordinateFrame:
         
         self.rank = len(self.ranges)
         self.ndim = self.rank
+        return
+
+    def setup_transformation_attributes(self):
         if not hasattr(self, "units"): self.units = ["" for _ in range(self.rank)]
         if not hasattr(self, "offset"): self.offset = [0 for _ in range(self.rank)]
-        if not hasattr(self, "angles"): self.angles = [0 for _ in range(self.rank)]
+        if not hasattr(self, "angles"): self.angles = [0 for _ in range(self.rank * (self.rank - 1))]
+        if not hasattr(self, "anchor"): self.anchor = [0 for _ in range(self.rank)]
         return
-    
+
     def set_units(self, value: str | list[str], axis: int = -1) -> None:
         if isinstance(value, str):
             if axis > -1 and axis < self.rank: self.units[axis] = value
@@ -175,7 +185,7 @@ class CoordinateFrame:
         return
 
     def set_angle(self, value: Numeric | NPSequence, axis: int = -1) -> None:
-        if isinstance(value, Numeric) and axis > -1 and axis < self.rank: self.angles[axis] = value # type: ignore
+        if isinstance(value, Numeric) and axis > -1 and axis < self.rank * (self.rank - 1): self.angles[axis] = value # type: ignore
         if isinstance(value, list | tuple | np.ndarray): self.angles = list(value)
         return
         
@@ -212,11 +222,11 @@ class CoordinateFrame:
 
 
 class Dataset:
-    """Container class mirroring h5py.Dataset, with numpy data stored at self.data, along with units (self.units), a name (self.name), and attributes (self.attrs).
+    """Container class mirroring h5py.Dataset, with numpy data stored at self.data, along with units (self.units), a name (self.name), and attributes (self.attributes).
     This class can be used outside of the context of HDF5 files.
     """
     def __init__(self, name: str = "", units: str = "", data: list | np.ndarray | None = None, shape: tuple[int] | None = None, dtype: np.dtype | None = None,
-                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None, attrs: dict = {}):
+                 resizable_axes: int | tuple[int] | None = None, maxshape: tuple[int] | None = None, slice_axes: tuple | list | None = None, slice_indices: tuple | list | None = None, attributes: dict = {}):
         self.set_name(name)
         
         if isinstance(data, list):
@@ -229,7 +239,7 @@ class Dataset:
             else: data = np.empty(shape = shape, dtype = np.float32)
         
         self.set_data(data)
-        self.set_attrs(attrs)
+        self.set_attributes(attributes)
         self.set_units(units)
         
         self.shape = self.data.shape
@@ -246,9 +256,9 @@ class Dataset:
             case _: self.dkind = "unknown"
         self.get_data_range()
         
-        self.slice_axes = tuple([index for index in range(self.rank - 2)])
-        self.slice_indices = tuple([0 for _ in range(self.rank - 2)])
-        self.remaining_axes = ()
+        self.slice_axes = [index for index in range(self.rank - 2)]
+        self.slice_indices = [0 for _ in range(self.rank - 2)]
+        self.remaining_axes = []
         
         self.set_slice(slice_axes, slice_indices)        
 
@@ -258,7 +268,7 @@ class Dataset:
     def __repr__(self) -> str:
         output_str_0 = f"SPMH5 dataset \"{self.name}\" holding a rank-{self.rank} numpy array of shape {self.shape}, dtype numpy.{self.dtype},"
         output_str_1 = f" with values in the range [{self.min:.4f} {self.units} to {self.max:.4f} {self.units}],"
-        output_str_2 = f" and {len(self.attrs)} attributes stored at self.attrs"
+        output_str_2 = f" and {len(self.attributes)} attributes stored at self.attributes"
         if self.units: return output_str_0 + output_str_1 + output_str_2
         else: return output_str_0 + output_str_2
 
@@ -277,16 +287,16 @@ class Dataset:
         self.data = np.empty((0,), dtype = np.float32)
         return
     
-    def set_attrs(self, attrs: dict) -> None:
-        self.attrs = attrs
+    def set_attributes(self, attributes: dict) -> None:
+        self.attributes = attributes
         return
     
-    def del_attrs(self) -> None:
-        self.attrs = {}
+    def del_attributes(self) -> None:
+        self.attributes = {}
         return
     
-    def add_attrs(self, attrs: dict) -> None:
-        self.attrs.update(attrs)
+    def add_attributes(self, attributes: dict) -> None:
+        self.attributes.update(attributes)
         return
     
     def set_units(self, units: str) -> None:
@@ -485,12 +495,13 @@ class Datagrid:
     """Compound class containing several Dataset objects. One Dataset object is the \"main\" dataset, and can be n-dimensional. Its name, units, shape, etc. can be retrieved at the top level.
     Attached to the axes of the main dataset are ancillary datasets. These are stored in a list as self.axes. The data of the individual ancillary datasets can be retrieved by selecting the axis from self.axes.
     """
-    def __init__(self, dataset: Dataset, axes: list[Dataset] = [], attrs: dict = {}):
+    def __init__(self, dataset: Dataset, axes: list[Dataset] = [], anchor: np.ndarray | list | tuple | None = None, angles: np.ndarray | list | tuple | None = None,
+                 angle_units: Literal["degree", "rad"] = "degree", offset: np.ndarray | list | tuple | None = None, attributes: dict = {}):
         self.set_dataset(dataset)
         self.set_axes(axes)
-        self.set_attrs(attrs)
+        self.set_attributes(attributes)
         
-        # Create aliases from the main dataset
+        # Inherit attributes from the main dataset (create aliases)
         self.name = self.dataset.name
         self.units = self.dataset.units
         self.shape = self.dataset.shape
@@ -511,6 +522,17 @@ class Datagrid:
         self.axis_units = [axis.units for axis in self.axes]
         self.axis_ranges = [[axis.min, axis.max] for axis in self.axes]
         self.axes_are_linear = all([axis.is_linear() for axis in self.axes])
+        
+        # Attributes to map between local and global coordinates
+        self.anchor = [0 for _ in range(len(self.axes))]
+        self.angles = [0 for _ in range(len(self.axes) * (len(self.axes) - 1))]
+        self.angle_units = "degree"
+        self.offset = [0 for _ in range(len(self.axes))]
+        
+        self.set_anchor(anchor)
+        self.set_angles(angles)
+        self.set_offset(offset)
+        self.set_angle_units(angle_units)        
 
     def __len__(self) -> int:
         return len(self.axes) + 1
@@ -523,14 +545,14 @@ class Datagrid:
         axis_dataset_names = ", ".join([axis.name for axis in self.axes])
         output_str_0 = f"SPMH5 datagrid \"{self.name}\" holding a rank-{self.rank} numpy array of shape {self.shape}, dtype numpy.{self.dtype},"
         output_str_1 = f" with values in the range [{self.min:.4f} {self.units} to {self.max:.4f} {self.units}],"
-        output_str_2 = f" {len(self.attrs)} attributes stored at self.attrs and {len(self.dataset.attrs)} attributes stored at self.dataset.attrs.\n"
+        output_str_2 = f" {len(self.attributes)} attributes stored at self.attributes and {len(self.dataset.attributes)} attributes stored at self.dataset.attributes.\n"
         output_str_3 = f"Attached to this datagrid are {len(self.axes)} datasets ({axis_dataset_names}) representing the axes:\n"
         axis_strings = "\n".join(["    " + repr(axis) for axis in self.axes])
         if self.units: return output_str_0 + output_str_1 + output_str_2 + output_str_3 + axis_strings + "\n"
         else: return output_str_0 + output_str_2 + axis_strings + "\n"
 
     @classmethod
-    def from_frame(cls, dataset: Dataset, frame: CoordinateFrame = CoordinateFrame(), axes_names: list[str] = [], include_boundaries: bool | Sequence[bool] = True, attrs: dict = {}) -> Datagrid:
+    def from_frame(cls, dataset: Dataset, frame: CoordinateFrame = CoordinateFrame(), axes_names: list[str] = [], include_boundaries: bool | Sequence[bool] = True, attributes: dict = {}) -> Datagrid:
         dset_shape = dataset.shape
         axis_ds_list = []
         
@@ -543,11 +565,12 @@ class Datagrid:
                 point_size = (limits[1] - limits[0]) / points
                 values = np.linspace(limits[0] + point_size / 2, limits[1] - point_size / 2, points)        
             axis_ds_list.append(Dataset(data = values, name = name, units = units))
-        
-        return cls(dataset = dataset, axes = axis_ds_list, attrs = attrs)
+
+        return cls(dataset = dataset, axes = axis_ds_list, anchor = frame.anchor, angles = frame.angles, angle_units = frame.angle_units, offset = frame.offset, attributes = attributes)
 
 
 
+    # Datasets and axes
     def set_dataset(self, dataset: Dataset) -> None:
         self.dataset = dataset
         return
@@ -556,8 +579,8 @@ class Datagrid:
         self.axes = axes
         return
     
-    def set_attrs(self, attrs: dict) -> None:
-        self.attrs = attrs
+    def set_attributes(self, attributes: dict) -> None:
+        self.attributes = attributes
         return
 
     def get_frame(self, anchor: NPSequence | None = None) -> CoordinateFrame:
@@ -570,6 +593,32 @@ class Datagrid:
 
 
 
+    # Mapping between local and global coordinates
+    def set_anchor(self, anchor: tuple | list | np.ndarray | None = None) -> None:
+        if not isinstance(anchor, tuple | list | np.ndarray): return
+        if not len(anchor) == len(self.anchor): return
+        self.anchor = list(anchor)
+        return
+
+    def set_offset(self, offset: tuple | list | np.ndarray | None = None) -> None:
+        if not isinstance(offset, tuple | list | np.ndarray): return
+        if not len(offset) == len(self.offset): return
+        self.offset = list(offset)
+        return
+
+    def set_angles(self, angles: tuple | list | np.ndarray | None = None) -> None:
+        if not isinstance(angles, tuple | list | np.ndarray): return
+        if not len(angles) == len(self.angles): return
+        self.angles = list(angles)
+        return
+
+    def set_angle_units(self, angle_units: Literal["degree", "rad"] = "degree") -> None:
+        self.angle_units = angle_units
+        return
+
+
+
+    # Slicing and data extraction hooks
     def set_slice(self, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None) -> None:
         self.dataset.set_slice(slice_axes, indices)
         self.slice_axes = self.dataset.slice_axes
