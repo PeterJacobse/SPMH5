@@ -464,11 +464,11 @@ def get_file_dict(root: File | h5py.File, extract_datasets: bool = False) -> dic
                 dataset_name = dataset.get("name", "")
                 dataset_units = dataset.get("units", "")
                 dataset_attrs = dataset.get("attrs", {})
-                slice_axes = dataset.get("slice_axes")
-                slice_indices = dataset.get("slice_indices")
+                slice_axes = dataset.get("slice_axes", [])
+                slice_indices = dataset.get("slice_indices", [])
                 
                 if isinstance(dataset_data, np.ndarray) and isinstance(dataset_attrs, dict) and isinstance(dataset_units, str) and isinstance(dataset_name, str):
-                    dataset_object = Dataset(name = dataset_name, data = dataset_data, attrs = dataset_attrs, units = dataset_units, slice_axes = slice_axes, slice_indices = slice_indices)
+                    dataset_object = Dataset(name = dataset_name, data = dataset_data, attributes = dataset_attrs, units = dataset_units, slice_axes = slice_axes, slice_indices = slice_indices)
                     if index == 0: axis_datasets_dict[dataset_path].update({"dataset_object": dataset_object})
                     if index == 1: main_datasets_dict[dataset_path].update({"dataset_object": dataset_object})
                     if index == 2: other_datasets_dict[dataset_path].update({"dataset_object": dataset_object})
@@ -513,7 +513,7 @@ def get_data_grids(root: File | h5py.File) -> tuple[dict[str, dict[str, dict[str
             axis_object = axis_dataset.get("dataset_object")
             if isinstance(axis_object, Dataset): axis_objects.append(axis_object)
         
-        datagrids.append(Datagrid(dataset = main_object, axes = axis_objects, attrs = parent_group_attrs))
+        datagrids.append(Datagrid(dataset = main_object, axes = axis_objects, attributes = parent_group_attrs))
     return output, datagrids
 
 def get_file(file_path: str = ""):
@@ -702,6 +702,7 @@ def create_instrument(root: File | h5py.File, name: str = "", long_name: str = "
 def create_dataset(root_or_group: File | h5py.File | h5py.Group, name: str = "", units: str = "", attributes: dict = {}, data: np.ndarray | None = None,
                    dtype: np.typing.DTypeLike | None = None, shape: tuple | None = None, resizable_axes: int | np.integer | tuple[int] | list[int] | None = None, maxshape: tuple | int | None = None, **kwargs) -> h5py.Dataset:
     try:
+        attrs = attributes.copy() if attributes else {}
         if dtype is None and isinstance(data, np.ndarray): parsed_dtype = data.dtype
         else: parsed_dtype = np.dtype(dtype)
         
@@ -747,8 +748,8 @@ def create_dataset(root_or_group: File | h5py.File | h5py.Group, name: str = "",
             else: dataset = root_or_group.create_dataset(name, dtype = target_dtype, shape = shape, chunks = True, maxshape = maxshape, *kwargs)
         
         dimension_type, quantity = infer_quantity_from_units(units)
-        attributes.update({"title": name, "long_name": name, "units": units, "dimension_type": dimension_type, "quantity": quantity})
-        create_attributes(dataset, attributes)
+        attrs.update({"title": name, "long_name": name, "units": units, "dimension_type": dimension_type, "quantity": quantity})
+        create_attributes(dataset, attrs)
         return dataset
     except Exception as e:
         raise Exception(f"Error encountered while attempting to create a new h5py dataset called {name} under {root_or_group}: {e}")
@@ -813,8 +814,8 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
     """
     try:
         # Find or create the entry group
-        attrs = attributes.copy()
-        parent_attrs = parent_group_attributes.copy()
+        attrs = attributes.copy() if attributes else {}
+        parent_attrs = parent_group_attributes.copy() if parent_group_attributes else {}
         
         entry_group = get_entry_group(root, name = "Measurement_000", verbose = verbose)
         entry_subgroups = get_groups(entry_group)
@@ -879,8 +880,11 @@ def create_main_dataset(root: File | h5py.File, dataset: Dataset | None = None, 
     except Exception as e:
         raise Exception(f"Error encountered while attempting to create a new h5py dataset called {name}: {e}")
 
-def create_datagrid(root: File | h5py.File, datagrid: Datagrid) -> tuple[h5py.Dataset, list[h5py.Dataset]]:
-    main_ds = create_main_dataset(root, dataset = datagrid.dataset, attributes = datagrid.dataset.attributes)
+def create_datagrid(root: File | h5py.File, datagrid: Datagrid, attributes: dict = {}, parent_group_attributes: dict = {}) -> tuple[h5py.Dataset, list[h5py.Dataset]]:
+    attrs = attributes.copy() if attributes else {}
+    parent_attrs = parent_group_attributes.copy() if parent_group_attributes else {}
+    
+    main_ds = create_main_dataset(root, dataset = datagrid.dataset, attributes = datagrid.dataset.attributes | attrs)
     axis_datasets = []
     
     for axis_ds in datagrid.axes:
@@ -892,7 +896,7 @@ def create_datagrid(root: File | h5py.File, datagrid: Datagrid) -> tuple[h5py.Da
     
     measurement_group = main_ds.parent
     assert isinstance(measurement_group, h5py.Group)
-    create_attributes(measurement_group, datagrid.attributes | {"anchor": datagrid.anchor, "angles": datagrid.angles, "angle_units": datagrid.angle_units, "offset": datagrid.offset})
+    create_attributes(measurement_group, datagrid.attributes | {"anchor": datagrid.anchor, "angles": datagrid.angles, "angle_units": datagrid.angle_units, "offset": datagrid.offset} | parent_attrs)
     return main_ds, axis_datasets
 
 def create_datacollection(root: File | h5py.File, data_collection: Datacollection) -> None:
@@ -917,6 +921,7 @@ def set_default_slice(main_dataset: h5py.Dataset, axes: int | tuple[int] | list[
     measurement_group = main_dataset.parent
     assert isinstance(measurement_group, h5py.Group)
     rank = main_dataset.ndim
+    if rank < 3: return
     
     if not axes: axes = [index for index in range(rank - 2)]
     if not indices: indices = [0 for _ in range(rank - 2)]

@@ -230,8 +230,13 @@ class Dataset:
         self.set_name(name)
         
         if isinstance(data, list):
-            if dtype: data = np.array(data, dtype)
-            else: data = np.array(data, dtype = np.float32)
+            if dtype:
+                data = np.array(data, dtype)
+            else:
+                if isinstance(data[0], float): data = np.array(data, dtype = np.float32)
+                elif isinstance(data[0], int): data = np.array(data, dtype = np.int16)
+                elif isinstance(data[0], str): data = np.array(data, dtype = np.str_)
+                else: data = np.array(data, dtype = np.object_)
         
         if not isinstance(data, np.ndarray):
             if not isinstance(shape, tuple): raise Exception("Neither data nor a shape were passed to Dataset. Dataset cannot be created.")
@@ -400,14 +405,15 @@ class Dataset:
         match data.ndim:
             case 1:
                 sliced_data = data
+                remaining_axes = [0]
             case 2:
                 sliced_data = data
+                remaining_axes = [0, 1]
             case _:
                 slice_list = [slice(None) for _ in range(self.rank)]
                 for axis, index in zip(slice_axes, indices):
                     slice_list[axis] = index
-                sliced_data = data[tuple(slice_list)]
-                
+                sliced_data = data[tuple(slice_list)]                
                 remaining_axes = [axis_index for axis_index in range(data.ndim) if not axis_index in slice_axes]
         
         if transpose:
@@ -641,8 +647,8 @@ class Datagrid:
         return
 
     def get_slice(self, data: np.ndarray | None = None, slice_axes: int | tuple | list | None = None, indices: int | tuple | list | None = None, transpose: bool = False) -> tuple[np.ndarray, dict[str, object]]:
-        if isinstance(slice_axes, int): slice_axes = (slice_axes,)
-        if isinstance(indices, int): indices = (indices,)
+        if isinstance(slice_axes, int): slice_axes = [slice_axes]
+        if isinstance(indices, int): indices = [indices]
         
         if not isinstance(slice_axes, tuple | list): slice_axes = self.slice_axes
         if not isinstance(indices, tuple | list): indices = self.slice_indices
@@ -654,7 +660,7 @@ class Datagrid:
         slice_axis_names = []
         slice_axis_values = []
         slice_axis_units = []
-        
+                
         for axis, index in zip(slice_axes, indices):
             axis_ds: Dataset = self.axes[axis]
             slice_axis_values.append(axis_ds.data[index])
@@ -683,7 +689,7 @@ class Datagrid:
     def show_data(self, data: np.ndarray | None = None, figsize: tuple = (8, 6), cmap: str = "Greys_r", transpose: bool = False,
                   slice_axes: tuple | list | None = None, indices: tuple | list | None = None, phase: float = .3, x_label: str = "", y_label: str = "") -> plt_fig.Figure:
         slice_data, slice_info = self.get_slice(data, slice_axes = slice_axes, indices = indices, transpose = transpose)
-        
+                
         x_units = slice_info.get("x_axis_units")
         y_units = slice_info.get("y_axis_units")
         x_label = f"{slice_info.get("x_axis_name", "")} ({x_units})" if x_units else f"{slice_info.get("x_axis_name", "")}"
